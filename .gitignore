@@ -1,0 +1,25 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+DerivedData/
+*.xcodeproj
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# XcodeGen output is regenerated from project.yml; do not commit it.
+# (covered by *.xcodeproj above)
+
+# Local config overrides
+WildwoodComponentsTestSuite.iOS/Config/Local.xcconfig
+
+# macOS
+.DS_Store
+
+# Misc
+*.profraw
+timeline.xctimeline
+playground.xcworkspace

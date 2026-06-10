@@ -1,0 +1,32 @@
+name: WildwoodComponentsTestSuite
+options:
+  bundleIdPrefix: io.wildwoodworks
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  WildwoodComponents:
+    path: ".."
+configFiles:
+  Debug: Config/Config.xcconfig
+  Release: Config/Config.xcconfig
+targets:
+  WildwoodComponentsTestSuite:
+    type: application
+    platform: iOS
+    sources:
+      - TestSuite
+    dependencies:
+      - package: WildwoodComponents
+        products:
+          - WildwoodCore
+          - WildwoodSwiftUI
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_WildwoodAPIBaseURL: "$(WILDWOOD_API_BASE_URL)"
+        INFOPLIST_KEY_WildwoodAppId: "$(WILDWOOD_APP_ID)"
+        PRODUCT_BUNDLE_IDENTIFIER: io.wildwoodworks.WildwoodComponentsTestSuite
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1"

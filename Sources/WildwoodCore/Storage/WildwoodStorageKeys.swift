@@ -1,0 +1,17 @@
+// Storage key names shared across all WildwoodComponents stacks (.NET, JS, Swift).
+// These literals are parity-checked by WildwoodComponents.Sync/scripts/parity-check.mjs —
+// never rename without changing every stack.
+
+public enum WildwoodStorageKeys {
+    public static let accessToken = "ww_accessToken"
+    public static let refreshToken = "ww_refreshToken"
+    public static let user = "ww_user"
+    public static let sessionAuth = "ww_session_auth"
+    public static let sessionExpiry = "ww_session_expiry"
+    public static let theme = "ww_theme"
+
+    /// Per-thread message draft key, `ww_draft_{threadId}` in the JS SDK.
+    public static func draft(threadId: String) -> String {
+        "ww_draft_\(threadId)"
+    }
+}

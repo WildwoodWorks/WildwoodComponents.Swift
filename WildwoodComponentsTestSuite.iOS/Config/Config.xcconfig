@@ -1,0 +1,6 @@
+// Default test-suite configuration. Override locally in Local.xcconfig (gitignored).
+// The $() in the URL defeats xcconfig's // comment parsing.
+WILDWOOD_API_BASE_URL = https:/$()/api.wildwoodworks.io/
+WILDWOOD_APP_ID =
+
+#include? "Local.xcconfig"

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C *)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(git fetch*)",
+      "Bash(git remote*)",
+      "Bash(git rev-parse*)",
+      "PowerShell(Set-Location *; git status*)",
+      "PowerShell(Set-Location *; git log*)",
+      "PowerShell(Set-Location *; git show*)"
+    ]
+  }
+}

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    # macos-26 images carry the newest Xcode; bump xcode-version to '27-beta'
+    # once GitHub-hosted runners ship it (see plan risk R1).
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest available Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
+      - name: Build package
+        run: swift build
+
+      - name: Run unit tests
+        run: swift test
+
+      - name: Generate test-suite project
+        run: |
+          brew install xcodegen
+          cd WildwoodComponentsTestSuite.iOS && xcodegen generate
+
+      - name: Build test-suite app (iOS Simulator)
+        run: |
+          DEST=$(xcrun simctl list devices available | grep -m1 -oE 'iPhone [^(]+' | head -1 | xargs)
+          echo "Using simulator: $DEST"
+          xcodebuild -project WildwoodComponentsTestSuite.iOS/WildwoodComponentsTestSuite.xcodeproj \
+            -scheme WildwoodComponentsTestSuite \
+            -destination "platform=iOS Simulator,name=$DEST" \
+            build CODE_SIGNING_ALLOWED=NO
