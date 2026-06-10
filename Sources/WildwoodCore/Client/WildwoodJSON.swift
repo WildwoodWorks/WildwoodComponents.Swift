@@ -35,13 +35,16 @@ public enum WildwoodJSON {
 
     // MARK: - Date parsing
 
-    private static let isoFractional: ISO8601DateFormatter = {
+    // ISO8601DateFormatter and DateFormatter are documented thread-safe but
+    // not marked Sendable; these are immutable after creation.
+
+    nonisolated(unsafe) private static let isoFractional: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f
     }()
 
-    private static let isoPlain: ISO8601DateFormatter = {
+    nonisolated(unsafe) private static let isoPlain: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return f
@@ -49,7 +52,7 @@ public enum WildwoodJSON {
 
     // .NET DateTime (Kind.Unspecified) serializes without a timezone suffix;
     // treat those as UTC, matching how the other stacks consume them.
-    private static let dotNetFractional: DateFormatter = {
+    nonisolated(unsafe) private static let dotNetFractional: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "UTC")
@@ -57,7 +60,7 @@ public enum WildwoodJSON {
         return f
     }()
 
-    private static let dotNetPlain: DateFormatter = {
+    nonisolated(unsafe) private static let dotNetPlain: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "UTC")
