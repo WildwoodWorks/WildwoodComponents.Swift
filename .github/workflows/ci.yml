@@ -13,7 +13,7 @@ jobs:
     # once GitHub-hosted runners ship it (see plan risk R1).
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Select newest available Xcode
         run: |
