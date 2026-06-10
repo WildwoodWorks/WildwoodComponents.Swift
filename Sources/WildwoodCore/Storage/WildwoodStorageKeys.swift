@@ -10,8 +10,10 @@ public enum WildwoodStorageKeys {
     public static let sessionExpiry = "ww_session_expiry"
     public static let theme = "ww_theme"
 
-    /// Per-thread message draft key, `ww_draft_{threadId}` in the JS SDK.
+    /// Prefix for per-thread message draft keys (`ww_draft_{threadId}` in the JS SDK).
+    public static let draftPrefix = "ww_draft_"
+
     public static func draft(threadId: String) -> String {
-        "ww_draft_\(threadId)"
+        draftPrefix + threadId
     }
 }
