@@ -14,10 +14,9 @@ public final class MessagingService: Sendable {
 
     // MARK: - Threads
 
-    public func getThreads(companyAppId: String) async -> [MessageThread] {
+    public func getThreads(companyAppId: String) async throws -> [MessageThread] {
         let encoded = companyAppId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? companyAppId
-        let data: [MessageThread]? = try? await http.get("api/messaging/threads?companyAppId=\(encoded)")
-        return data ?? []
+        return try await http.get("api/messaging/threads?companyAppId=\(encoded)")
     }
 
     public func getThread(threadId: String) async -> MessageThread? {
@@ -44,9 +43,8 @@ public final class MessagingService: Sendable {
 
     // MARK: - Messages
 
-    public func getMessages(threadId: String, page: Int = 1, pageSize: Int = 50) async -> [SecureMessage] {
-        let data: [SecureMessage]? = try? await http.get("api/messaging/threads/\(threadId)/messages?page=\(page)&pageSize=\(pageSize)")
-        return data ?? []
+    public func getMessages(threadId: String, page: Int = 1, pageSize: Int = 50) async throws -> [SecureMessage] {
+        try await http.get("api/messaging/threads/\(threadId)/messages?page=\(page)&pageSize=\(pageSize)")
     }
 
     public func sendMessage(
@@ -132,17 +130,15 @@ public final class MessagingService: Sendable {
 
     // MARK: - Users
 
-    public func getCompanyAppUsers(companyAppId: String) async -> [CompanyAppUser] {
+    public func getCompanyAppUsers(companyAppId: String) async throws -> [CompanyAppUser] {
         let encoded = companyAppId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? companyAppId
-        let data: [CompanyAppUser]? = try? await http.get("api/messaging/users?companyAppId=\(encoded)")
-        return data ?? []
+        return try await http.get("api/messaging/users?companyAppId=\(encoded)")
     }
 
-    public func searchUsers(companyAppId: String, searchTerm: String) async -> [CompanyAppUser] {
+    public func searchUsers(companyAppId: String, searchTerm: String) async throws -> [CompanyAppUser] {
         let app = companyAppId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? companyAppId
         let term = searchTerm.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? searchTerm
-        let data: [CompanyAppUser]? = try? await http.get("api/messaging/users/search?companyAppId=\(app)&q=\(term)")
-        return data ?? []
+        return try await http.get("api/messaging/users/search?companyAppId=\(app)&q=\(term)")
     }
 
     // MARK: - Typing indicators
@@ -165,9 +161,8 @@ public final class MessagingService: Sendable {
         }
     }
 
-    public func getTypingIndicators(threadId: String) async -> [TypingIndicator] {
-        let data: [TypingIndicator]? = try? await http.get("api/messaging/threads/\(threadId)/typing")
-        return data ?? []
+    public func getTypingIndicators(threadId: String) async throws -> [TypingIndicator] {
+        try await http.get("api/messaging/threads/\(threadId)/typing")
     }
 
     // MARK: - Attachments
@@ -189,15 +184,14 @@ public final class MessagingService: Sendable {
 
     // MARK: - Search
 
-    public func searchMessages(companyAppId: String, searchTerm: String, threadId: String? = nil) async -> [MessageSearchResult] {
+    public func searchMessages(companyAppId: String, searchTerm: String, threadId: String? = nil) async throws -> [MessageSearchResult] {
         let app = companyAppId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? companyAppId
         let term = searchTerm.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? searchTerm
         var url = "api/messaging/search?companyAppId=\(app)&q=\(term)"
         if let threadId {
             url += "&threadId=\(threadId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? threadId)"
         }
-        let data: [MessageSearchResult]? = try? await http.get(url)
-        return data ?? []
+        return try await http.get(url)
     }
 
     // MARK: - Online status
@@ -219,10 +213,9 @@ public final class MessagingService: Sendable {
         }
     }
 
-    public func getOnlineStatuses(companyAppId: String) async -> [OnlineStatus] {
+    public func getOnlineStatuses(companyAppId: String) async throws -> [OnlineStatus] {
         let encoded = companyAppId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? companyAppId
-        let data: [OnlineStatus]? = try? await http.get("api/messaging/status?companyAppId=\(encoded)")
-        return data ?? []
+        return try await http.get("api/messaging/status?companyAppId=\(encoded)")
     }
 
     // MARK: - Drafts (client-side, mirrors the JS localStorage drafts at ww_draft_{threadId})

@@ -34,6 +34,7 @@ public struct PaymentComponent: View {
     @State private var providerInfo: PlatformFilteredProvidersDto?
     @State private var selectedProviderId: String?
     @State private var pendingRedirectPayment: InitiatePaymentResponse?
+    @State private var purchaseManager: StoreKitPurchaseManager?
 
     public init(
         appId: String? = nil,
@@ -162,7 +163,8 @@ public struct PaymentComponent: View {
             fail("No App Store payment provider is configured for this app.")
             return
         }
-        guard let resolvedAppId = appId ?? client.config.appId else { return }
+        guard let resolvedAppId = appId ?? client.config.appId,
+              let manager = purchaseManager else { return }
         isProcessing = true
         defer { isProcessing = false }
 
@@ -176,12 +178,13 @@ public struct PaymentComponent: View {
                 return
             }
 
-            let manager = StoreKitPurchaseManager(payment: client.payment, appId: resolvedAppId)
             let result = try await manager.purchase(productId: productId)
             onPaymentSuccess?(result.validation)
         } catch WildwoodPurchaseError.purchaseCancelled {
             onCancel?()
         } catch WildwoodPurchaseError.purchasePending {
+            // The Transaction.updates observer started in load() validates and
+            // finishes the transaction when the approval lands.
             errorMessage = "Purchase is awaiting approval (Ask to Buy). It will complete automatically."
         } catch {
             fail((error as? WildwoodError)?.message ?? error.localizedDescription)
@@ -189,11 +192,10 @@ public struct PaymentComponent: View {
     }
 
     private func restorePurchases() async {
-        guard let client, let resolvedAppId = appId ?? client.config.appId else { return }
+        guard let manager = purchaseManager else { return }
         isProcessing = true
         defer { isProcessing = false }
         do {
-            let manager = StoreKitPurchaseManager(payment: client.payment, appId: resolvedAppId)
             let results = try await manager.restorePurchases()
             if let success = results.first(where: \.success) {
                 onPaymentSuccess?(success)
@@ -304,6 +306,13 @@ public struct PaymentComponent: View {
         isProcessing = true
         defer { isProcessing = false }
         do {
+            // NOTE (backend question): api/payment/status/{transactionId} is
+            // polled here with the provider's paymentIntentId because the
+            // initiate response carries no Wildwood transaction id. The web
+            // stacks never poll (the return URL completes the flow). Verify
+            // whether the status endpoint resolves external/provider ids; if
+            // it is keyed only by internal transaction id, the backend needs
+            // a lookup-by-external-id variant for mobile redirect checkouts.
             let result = try await client.payment.getPaymentStatus(transactionId: intentId)
             if result.success {
                 pendingRedirectPayment = nil
@@ -345,6 +354,16 @@ public struct PaymentComponent: View {
             errorMessage = "PaymentComponent requires an appId."
             return
         }
+
+        // One long-lived manager: observes Transaction.updates so renewals,
+        // Ask to Buy approvals, purchases from other devices, and previously
+        // failed validations are revalidated with Wildwood and finished.
+        if purchaseManager == nil {
+            let manager = StoreKitPurchaseManager(payment: client.payment, appId: resolvedAppId)
+            purchaseManager = manager
+            await manager.startObservingTransactions()
+        }
+
         do {
             providerInfo = try await client.payment.getAvailableProviders(appId: resolvedAppId)
         } catch {

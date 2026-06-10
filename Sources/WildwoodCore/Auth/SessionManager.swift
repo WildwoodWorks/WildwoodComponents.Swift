@@ -150,8 +150,11 @@ public final class SessionManager {
         clearSessionStorage()
     }
 
+    /// Refresh the access token. Always available for reactive use (the HTTP
+    /// client's 401 retry and app-resume) regardless of `enableAutoTokenRefresh`,
+    /// which only controls the proactive refresh timer — matching the JS SDK,
+    /// where an *unset* option still allows reactive refresh.
     public func refreshToken() async -> Bool {
-        guard config.enableAutoTokenRefresh else { return false }
         guard currentUser?.jwtToken.isEmpty == false else { return false }
 
         // Skip when refreshed recently.
@@ -169,7 +172,7 @@ public final class SessionManager {
     }
 
     public func onAppResumed() async {
-        guard isInitializedFlag, config.enableAutoTokenRefresh, currentUser != nil else { return }
+        guard isInitializedFlag, currentUser != nil else { return }
 
         if isSessionExpired() {
             stopRefreshTimer()

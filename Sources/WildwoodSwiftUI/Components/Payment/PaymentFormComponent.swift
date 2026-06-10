@@ -83,11 +83,43 @@ public struct PaymentFormComponent: View {
             .buttonStyle(.borderedProminent)
             .disabled(isProcessing)
 
-            if pendingPayment != nil {
-                Text("Complete the payment in your browser. Your receipt will be emailed.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if let pending = pendingPayment {
+                VStack(spacing: 8) {
+                    Text("Complete the payment in your browser, then return here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        Task { await checkStatus(pending) }
+                    } label: {
+                        if isProcessing {
+                            ProgressView().frame(maxWidth: .infinity)
+                        } else {
+                            Text("I've completed the payment").frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(isProcessing)
+                }
             }
+        }
+    }
+
+    private func checkStatus(_ pending: InitiatePaymentResponse) async {
+        guard let client, let intentId = pending.paymentIntentId else { return }
+        isProcessing = true
+        defer { isProcessing = false }
+        do {
+            // Same identifier caveat as PaymentComponent.checkRedirectPaymentStatus:
+            // verify the status endpoint resolves provider intent ids.
+            let result = try await client.payment.getPaymentStatus(transactionId: intentId)
+            if result.success {
+                pendingPayment = nil
+                onPaymentSuccess?(pending)
+            } else {
+                errorMessage = result.errorMessage ?? "Payment is not complete yet."
+            }
+        } catch {
+            errorMessage = (error as? WildwoodError)?.message ?? error.localizedDescription
         }
     }
 
@@ -125,10 +157,14 @@ public struct PaymentFormComponent: View {
             }
 
             if let urlString = initiation.redirectUrl ?? initiation.approvalUrl, let url = URL(string: urlString) {
+                // Redirect checkout: success is reported only after the user
+                // returns and the completion check confirms (JS parity — the
+                // web component navigates away instead of signaling success).
                 pendingPayment = initiation
                 openURL(url)
+            } else {
+                onPaymentSuccess?(initiation)
             }
-            onPaymentSuccess?(initiation)
         } catch {
             let message = (error as? WildwoodError)?.message ?? error.localizedDescription
             errorMessage = message

@@ -21,7 +21,9 @@ public struct WildwoodConfig: Sendable {
     public var maxRetryAttempts: Int
     /// Session expiration in minutes (default 60).
     public var sessionExpirationMinutes: Int
-    /// Automatically refresh the JWT before expiry (default false).
+    /// Schedule proactive JWT refresh at 80% of token lifetime (default false).
+    /// Reactive refresh — the 401 retry and app-resume revalidation — is always
+    /// active regardless of this flag.
     public var enableAutoTokenRefresh: Bool
     /// Extend the session on activity (default true).
     public var slidingExpiration: Bool

@@ -85,9 +85,8 @@ public final class PaymentService: Sendable {
 
     // MARK: - Saved payment methods
 
-    public func getSavedPaymentMethods(customerId: String) async -> [SavedPaymentMethodDto] {
-        let data: [SavedPaymentMethodDto]? = try? await http.get("api/payment/methods/\(customerId)")
-        return data ?? []
+    public func getSavedPaymentMethods(customerId: String) async throws -> [SavedPaymentMethodDto] {
+        try await http.get("api/payment/methods/\(customerId)")
     }
 
     public func deleteSavedPaymentMethod(paymentMethodId: String) async -> Bool {

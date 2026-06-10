@@ -29,50 +29,57 @@ public actor WildwoodHttpClient {
     }
 
     // MARK: - Verb methods (endpoint paths must be string literals — see header)
+    // `timeout` overrides the config-level request timeout (seconds), mirroring
+    // the JS RequestOptions.timeout for long-running calls (e.g. AI generation).
 
-    public func get<T: Decodable & Sendable>(_ path: String, skipAuth: Bool = false) async throws -> T {
-        try decode(await request(method: "GET", path: path, bodyData: nil, skipAuth: skipAuth))
+    public func get<T: Decodable & Sendable>(_ path: String, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> T {
+        try decode(await request(method: "GET", path: path, bodyData: nil, skipAuth: skipAuth, timeout: timeout))
     }
 
-    public func post<T: Decodable & Sendable>(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false) async throws -> T {
-        try decode(await request(method: "POST", path: path, bodyData: encode(body), skipAuth: skipAuth))
+    public func post<T: Decodable & Sendable>(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> T {
+        try decode(await request(method: "POST", path: path, bodyData: encode(body), skipAuth: skipAuth, timeout: timeout))
     }
 
-    public func post<T: Decodable & Sendable>(_ path: String, skipAuth: Bool = false) async throws -> T {
-        try decode(await request(method: "POST", path: path, bodyData: nil, skipAuth: skipAuth))
+    public func post<T: Decodable & Sendable>(_ path: String, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> T {
+        try decode(await request(method: "POST", path: path, bodyData: nil, skipAuth: skipAuth, timeout: timeout))
     }
 
-    public func postVoid(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false) async throws {
-        _ = try await request(method: "POST", path: path, bodyData: encode(body), skipAuth: skipAuth)
+    public func postVoid(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws {
+        _ = try await request(method: "POST", path: path, bodyData: encode(body), skipAuth: skipAuth, timeout: timeout)
     }
 
-    public func postVoid(_ path: String, skipAuth: Bool = false) async throws {
-        _ = try await request(method: "POST", path: path, bodyData: nil, skipAuth: skipAuth)
+    public func postVoid(_ path: String, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws {
+        _ = try await request(method: "POST", path: path, bodyData: nil, skipAuth: skipAuth, timeout: timeout)
     }
 
-    public func put<T: Decodable & Sendable>(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false) async throws -> T {
-        try decode(await request(method: "PUT", path: path, bodyData: encode(body), skipAuth: skipAuth))
+    public func put<T: Decodable & Sendable>(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> T {
+        try decode(await request(method: "PUT", path: path, bodyData: encode(body), skipAuth: skipAuth, timeout: timeout))
     }
 
-    public func putVoid(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false) async throws {
-        _ = try await request(method: "PUT", path: path, bodyData: encode(body), skipAuth: skipAuth)
+    public func putVoid(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws {
+        _ = try await request(method: "PUT", path: path, bodyData: encode(body), skipAuth: skipAuth, timeout: timeout)
     }
 
-    public func delete<T: Decodable & Sendable>(_ path: String, skipAuth: Bool = false) async throws -> T {
-        try decode(await request(method: "DELETE", path: path, bodyData: nil, skipAuth: skipAuth))
+    public func delete<T: Decodable & Sendable>(_ path: String, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> T {
+        try decode(await request(method: "DELETE", path: path, bodyData: nil, skipAuth: skipAuth, timeout: timeout))
     }
 
-    public func deleteVoid(_ path: String, skipAuth: Bool = false) async throws {
-        _ = try await request(method: "DELETE", path: path, bodyData: nil, skipAuth: skipAuth)
+    public func deleteVoid(_ path: String, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws {
+        _ = try await request(method: "DELETE", path: path, bodyData: nil, skipAuth: skipAuth, timeout: timeout)
     }
 
-    public func patch<T: Decodable & Sendable>(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false) async throws -> T {
-        try decode(await request(method: "PATCH", path: path, bodyData: encode(body), skipAuth: skipAuth))
+    public func patch<T: Decodable & Sendable>(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> T {
+        try decode(await request(method: "PATCH", path: path, bodyData: encode(body), skipAuth: skipAuth, timeout: timeout))
     }
 
     /// Raw-body GET for binary downloads (audio, images).
-    public func getData(_ path: String, skipAuth: Bool = false) async throws -> Data {
-        try await request(method: "GET", path: path, bodyData: nil, skipAuth: skipAuth)
+    public func getData(_ path: String, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> Data {
+        try await request(method: "GET", path: path, bodyData: nil, skipAuth: skipAuth, timeout: timeout)
+    }
+
+    /// Raw-body POST for binary downloads (e.g. TTS audio).
+    public func postData(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false, timeout: TimeInterval? = nil) async throws -> Data {
+        try await request(method: "POST", path: path, bodyData: encode(body), skipAuth: skipAuth, timeout: timeout)
     }
 
     /// Multipart/form-data POST for file uploads.
@@ -83,7 +90,8 @@ public actor WildwoodHttpClient {
         fileData: Data,
         mimeType: String,
         fields: [String: String] = [:],
-        skipAuth: Bool = false
+        skipAuth: Bool = false,
+        timeout: TimeInterval? = nil
     ) async throws -> T {
         let boundary = "WildwoodBoundary-\(UUID().uuidString)"
         var body = Data()
@@ -99,14 +107,10 @@ public actor WildwoodHttpClient {
             path: path,
             bodyData: body,
             skipAuth: skipAuth,
+            timeout: timeout,
             contentType: "multipart/form-data; boundary=\(boundary)"
         )
         return try decode(data)
-    }
-
-    /// Raw-body POST for binary downloads (e.g. TTS audio).
-    public func postData(_ path: String, body: some Encodable & Sendable, skipAuth: Bool = false) async throws -> Data {
-        try await request(method: "POST", path: path, bodyData: encode(body), skipAuth: skipAuth)
     }
 
     // MARK: - Core request pipeline
@@ -116,6 +120,7 @@ public actor WildwoodHttpClient {
         path: String,
         bodyData: Data?,
         skipAuth: Bool,
+        timeout: TimeInterval? = nil,
         contentType: String = "application/json"
     ) async throws -> Data {
         let url = try joinUrl(base: config.baseUrl, path: path)
@@ -125,7 +130,14 @@ public actor WildwoodHttpClient {
 
         for attempt in 0..<maxAttempts {
             do {
-                return try await executeRequest(method: method, url: url, bodyData: bodyData, skipAuth: skipAuth, contentType: contentType)
+                return try await executeRequest(
+                    method: method,
+                    url: url,
+                    bodyData: bodyData,
+                    skipAuth: skipAuth,
+                    timeout: timeout,
+                    contentType: contentType
+                )
             } catch let error as WildwoodError {
                 lastError = error
 
@@ -141,10 +153,12 @@ public actor WildwoodHttpClient {
                     throw error
                 }
                 if attempt < maxAttempts - 1 {
+                    // Propagates CancellationError, aborting the retry loop.
                     let backoff = min(1.0 * pow(2.0, Double(attempt)), 10.0)
-                    try? await Task.sleep(for: .seconds(backoff))
+                    try await Task.sleep(for: .seconds(backoff))
                 }
             }
+            // Non-WildwoodError errors (e.g. CancellationError) propagate immediately.
         }
 
         throw lastError
@@ -155,11 +169,12 @@ public actor WildwoodHttpClient {
         url: URL,
         bodyData: Data?,
         skipAuth: Bool,
-        contentType: String = "application/json"
+        timeout: TimeInterval?,
+        contentType: String
     ) async throws -> Data {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = method
-        urlRequest.timeoutInterval = config.requestTimeoutSeconds
+        urlRequest.timeoutInterval = timeout ?? config.requestTimeoutSeconds
         urlRequest.setValue(contentType, forHTTPHeaderField: "Content-Type")
         if let apiKey = config.apiKey {
             urlRequest.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
@@ -173,6 +188,11 @@ public actor WildwoodHttpClient {
         let response: URLResponse
         do {
             (data, response) = try await urlSession.data(for: urlRequest)
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // Task cancellation must not be swallowed into a retryable network error.
+            throw CancellationError()
+        } catch is CancellationError {
+            throw CancellationError()
         } catch let urlError as URLError where urlError.code == .timedOut {
             throw WildwoodError(message: "Request timed out", status: 0, code: .timeout)
         } catch {

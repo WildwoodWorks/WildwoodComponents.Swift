@@ -159,11 +159,21 @@ private struct AuthFlowView: View {
     }
 
     private func signIn(with provider: AuthProvider) async {
-        guard let authUrl = await model.providerAuthorizationUrl(providerName: provider.name) else {
+        guard let authUrl = await model.providerAuthorizationUrl(
+            providerName: provider.name,
+            state: "native=\(oauthCallbackScheme)"
+        ) else {
             model.errorMessage = "Could not start \(provider.displayName) sign-in."
             return
         }
         do {
+            // BACKEND DEPENDENCY (plan item R3): the server's OAuth callback
+            // currently completes via window.postMessage for web popups. For
+            // this session to complete natively, the backend must support
+            // redirecting the callback to `<oauthCallbackScheme>://…` with the
+            // provider token/code in the query (the `state` value below carries
+            // the requested scheme as a hint). Until then the browser sheet
+            // stays open on the callback page and the user has to cancel.
             let callbackURL = try await webAuthenticationSession.authenticate(
                 using: authUrl,
                 callbackURLScheme: oauthCallbackScheme

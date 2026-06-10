@@ -35,8 +35,10 @@ public struct SecureMessagingComponent: View {
                 LoadingSpinnerView()
             }
         }
-        .task {
-            guard model == nil, let client = requireClient(client, component: "SecureMessagingComponent") else { return }
+        .task(id: companyAppId) {
+            guard model?.companyAppId != companyAppId,
+                  let client = requireClient(client, component: "SecureMessagingComponent") else { return }
+            model?.closeThread()
             let created = WildwoodMessagingModel(client: client, companyAppId: companyAppId, pollInterval: pollInterval)
             model = created
             await created.loadThreads()
@@ -168,7 +170,7 @@ private struct MessagingSplitView: View {
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...4)
                     .onChange(of: model.draft) {
-                        model.saveDraft()
+                        model.onDraftChanged()
                     }
                 Button {
                     Task { await model.sendMessage() }

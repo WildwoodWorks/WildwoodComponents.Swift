@@ -11,32 +11,34 @@ public final class AIService: Sendable {
         self.appId = appId
     }
 
-    public func sendMessage(_ request: AIChatRequest) async -> AIChatResponse {
-        await postChat("api/ai/chat", request: request)
+    /// `timeout` overrides the default request timeout (seconds) for
+    /// long-running generations — mirrors the JS RequestOptions.timeout.
+    public func sendMessage(_ request: AIChatRequest, timeout: TimeInterval? = nil) async -> AIChatResponse {
+        await postChat("api/ai/chat", request: request, timeout: timeout)
     }
 
     /// Send a message via the AI proxy endpoint — identical backing handler to
     /// `api/ai/chat`, but the canonical endpoint for AIProxyComponent usage.
-    public func sendProxyMessage(_ request: AIChatRequest) async -> AIChatResponse {
-        await postChat("api/ai/proxy", request: request)
+    public func sendProxyMessage(_ request: AIChatRequest, timeout: TimeInterval? = nil) async -> AIChatResponse {
+        await postChat("api/ai/proxy", request: request, timeout: timeout)
     }
 
-    private func postChat(_ endpoint: String, request: AIChatRequest) async -> AIChatResponse {
+    private func postChat(_ endpoint: String, request: AIChatRequest, timeout: TimeInterval? = nil) async -> AIChatResponse {
         do {
             // Endpoint arrives as a literal from the two callers above (parity-scanned there).
-            return try await http.post(endpoint, body: request)
+            return try await http.post(endpoint, body: request, timeout: timeout)
         } catch {
             return Self.parseErrorResponse(error)
         }
     }
 
     /// Send a message with a file attachment (Base64-encoded in the request body).
-    public func sendMessageWithFile(_ request: AIChatRequest, fileData: Data, fileName: String) async -> AIChatResponse {
-        await sendMessage(Self.attachFile(to: request, fileData: fileData, fileName: fileName))
+    public func sendMessageWithFile(_ request: AIChatRequest, fileData: Data, fileName: String, timeout: TimeInterval? = nil) async -> AIChatResponse {
+        await sendMessage(Self.attachFile(to: request, fileData: fileData, fileName: fileName), timeout: timeout)
     }
 
-    public func sendProxyMessageWithFile(_ request: AIChatRequest, fileData: Data, fileName: String) async -> AIChatResponse {
-        await sendProxyMessage(Self.attachFile(to: request, fileData: fileData, fileName: fileName))
+    public func sendProxyMessageWithFile(_ request: AIChatRequest, fileData: Data, fileName: String, timeout: TimeInterval? = nil) async -> AIChatResponse {
+        await sendProxyMessage(Self.attachFile(to: request, fileData: fileData, fileName: fileName), timeout: timeout)
     }
 
     private static func attachFile(to request: AIChatRequest, fileData: Data, fileName: String) -> AIChatRequest {
@@ -103,7 +105,7 @@ public final class AIService: Sendable {
 
     // MARK: - Configurations
 
-    public func getConfigurations(configurationType: String? = nil) async -> [AIConfiguration] {
+    public func getConfigurations(configurationType: String? = nil) async throws -> [AIConfiguration] {
         var query: [String] = []
         if let configurationType {
             query.append("configurationType=\(configurationType.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? configurationType)")
@@ -112,8 +114,7 @@ public final class AIService: Sendable {
             query.append("requestedAppId=\(appId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? appId)")
         }
         let suffix = query.isEmpty ? "" : "?\(query.joined(separator: "&"))"
-        let data: [AIConfiguration]? = try? await http.get("api/ai/configurations\(suffix)")
-        return data ?? []
+        return try await http.get("api/ai/configurations\(suffix)")
     }
 
     public func getConfiguration(configurationId: String) async -> AIConfiguration? {

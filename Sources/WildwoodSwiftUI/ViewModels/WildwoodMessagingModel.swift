@@ -1,7 +1,9 @@
 // Secure messaging state — view-model equivalent of react-shared's
 // useMessaging. Real-time updates use foreground polling (the JS stacks use
 // SignalR; the protocol seam in MessagingService keeps a future native
-// SignalR adapter non-breaking).
+// SignalR adapter non-breaking). Typing indicators are sent on input with a
+// 3-second inactivity stop, and drafts persist debounced — matching the React
+// component's behavior.
 
 import Foundation
 import Observation
@@ -23,6 +25,9 @@ public final class WildwoodMessagingModel {
     public var errorMessage = ""
 
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    @ObservationIgnored private var draftSaveTask: Task<Void, Never>?
+    @ObservationIgnored private var stopTypingTask: Task<Void, Never>?
+    @ObservationIgnored private var isTyping = false
 
     public init(client: WildwoodClient, companyAppId: String, pollInterval: TimeInterval = 5) {
         self.client = client
@@ -33,15 +38,27 @@ public final class WildwoodMessagingModel {
     public func loadThreads() async {
         isLoading = true
         defer { isLoading = false }
-        threads = await client.messaging.getThreads(companyAppId: companyAppId)
+        do {
+            threads = try await client.messaging.getThreads(companyAppId: companyAppId)
+            // Keep the thread list fresh even before a conversation is opened.
+            startPolling()
+        } catch {
+            errorMessage = (error as? WildwoodError)?.message ?? error.localizedDescription
+        }
     }
 
     public func selectThread(_ thread: MessageThread) async {
         // Persist the draft of the thread we're leaving.
         persistDraft()
+        await stopTypingNow()
 
         selectedThread = thread
-        messages = await client.messaging.getMessages(threadId: thread.id)
+        do {
+            messages = try await client.messaging.getMessages(threadId: thread.id)
+        } catch {
+            messages = []
+            errorMessage = (error as? WildwoodError)?.message ?? error.localizedDescription
+        }
         draft = client.messaging.getDraft(threadId: thread.id)?.content ?? ""
         _ = await client.messaging.markThreadAsRead(threadId: thread.id)
         startPolling()
@@ -49,7 +66,9 @@ public final class WildwoodMessagingModel {
 
     public func closeThread() {
         persistDraft()
+        Task { await stopTypingNow() }
         stopPolling()
+        draftSaveTask?.cancel()
         selectedThread = nil
         messages = []
         typingIndicators = []
@@ -76,6 +95,8 @@ public final class WildwoodMessagingModel {
         let content = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty else { return }
         draft = ""
+        draftSaveTask?.cancel()
+        await stopTypingNow()
         do {
             let message = try await client.messaging.sendMessage(threadId: thread.id, content: content)
             messages.append(message)
@@ -103,12 +124,44 @@ public final class WildwoodMessagingModel {
         }
     }
 
-    public func saveDraft() {
-        persistDraft()
+    /// Call on every draft edit: debounces the persisted draft (1s) and sends a
+    /// typing indicator with a 3s inactivity stop.
+    public func onDraftChanged() {
+        draftSaveTask?.cancel()
+        draftSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.persistDraft()
+        }
+
+        guard selectedThread != nil, !draft.isEmpty else { return }
+        if !isTyping {
+            isTyping = true
+            if let threadId = selectedThread?.id {
+                Task { [client] in _ = await client.messaging.startTyping(threadId: threadId) }
+            }
+        }
+        stopTypingTask?.cancel()
+        stopTypingTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled else { return }
+            await self?.stopTypingNow()
+        }
     }
 
     public var currentUserId: String? {
         client.session.userId
+    }
+
+    // MARK: - Typing
+
+    private func stopTypingNow() async {
+        stopTypingTask?.cancel()
+        guard isTyping else { return }
+        isTyping = false
+        if let threadId = selectedThread?.id {
+            _ = await client.messaging.stopTyping(threadId: threadId)
+        }
     }
 
     // MARK: - Polling
@@ -131,19 +184,34 @@ public final class WildwoodMessagingModel {
     }
 
     private func poll() async {
-        guard let thread = selectedThread else { return }
-        async let newMessages = client.messaging.getMessages(threadId: thread.id)
-        async let typing = client.messaging.getTypingIndicators(threadId: thread.id)
-        let fetched = await newMessages
-        if fetched.count != messages.count || fetched.last?.id != messages.last?.id {
-            messages = fetched
+        guard let thread = selectedThread else {
+            // No conversation open — keep the thread list (previews, unread
+            // counts) fresh, like the React component does on incoming messages.
+            if let fresh = try? await client.messaging.getThreads(companyAppId: companyAppId) {
+                threads = fresh
+            }
+            return
         }
-        typingIndicators = await typing.filter { $0.userId != client.session.userId && $0.isVisible }
+
+        // Always take the fetched set: edits, reactions, and read receipts can
+        // change without altering count or last-message id.
+        if let fetched = try? await client.messaging.getMessages(threadId: thread.id) {
+            let hadNewMessages = fetched.count != messages.count
+            messages = fetched
+            if hadNewMessages, let freshThreads = try? await client.messaging.getThreads(companyAppId: companyAppId) {
+                threads = freshThreads
+            }
+        }
+        if let typing = try? await client.messaging.getTypingIndicators(threadId: thread.id) {
+            typingIndicators = typing.filter { $0.userId != client.session.userId && $0.isVisible }
+        }
     }
 
     private func refreshMessages() async {
         guard let thread = selectedThread else { return }
-        messages = await client.messaging.getMessages(threadId: thread.id)
+        if let fetched = try? await client.messaging.getMessages(threadId: thread.id) {
+            messages = fetched
+        }
     }
 
     private func persistDraft() {

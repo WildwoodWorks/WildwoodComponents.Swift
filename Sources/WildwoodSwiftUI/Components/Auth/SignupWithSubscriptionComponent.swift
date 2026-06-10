@@ -26,9 +26,13 @@ public struct SignupWithSubscriptionComponent: View {
     @State private var step: Step = .accountInfo
     @State private var isLoading = false
     @State private var errorMessage = ""
+    @State private var warningMessage = ""
     @State private var authConfig: AuthenticationConfiguration?
     @State private var tiers: [AppTierModel] = []
     @State private var selectedPricingByTier: [String: String] = [:]
+    // Retry guards: a failed subscribe must not re-register or re-charge.
+    @State private var establishedAuth: AuthenticationResponse?
+    @State private var collectedTransactionId: String?
 
     // Account form
     @State private var firstName = ""
@@ -66,8 +70,12 @@ public struct SignupWithSubscriptionComponent: View {
             case .done:
                 ContentUnavailableView(
                     "Welcome aboard!",
-                    systemImage: "checkmark.seal.fill",
-                    description: Text("Your account and subscription are ready.")
+                    systemImage: warningMessage.isEmpty ? "checkmark.seal.fill" : "checkmark.seal",
+                    description: Text(
+                        warningMessage.isEmpty
+                            ? "Your account and subscription are ready."
+                            : warningMessage
+                    )
                 )
             }
         }
@@ -198,89 +206,101 @@ public struct SignupWithSubscriptionComponent: View {
         guard let client else { return }
         guard let resolvedAppId = appId ?? client.config.appId else { return }
         errorMessage = ""
+        warningMessage = ""
         step = .processing
         isLoading = true
         defer { isLoading = false }
 
         do {
-            // Collect payment first for paid tiers, so a declined payment
-            // doesn't leave a registered-but-unsubscribed account.
-            var paymentTransactionId: String?
+            // Register + login once; a retry after a failed payment/subscribe
+            // reuses the established session instead of re-registering.
+            let auth: AuthenticationResponse
+            if let establishedAuth {
+                auth = establishedAuth
+            } else {
+                auth = try await registerAndLogin(client: client, appId: resolvedAppId)
+                establishedAuth = auth
+            }
+
+            // Collect payment for paid tiers; reuse a previously collected
+            // transaction on retry so the user isn't charged twice.
             let needsPayment = !tier.isFreeTier && (pricing?.price ?? 0) > 0
-            if needsPayment, let onPaymentRequired {
+            if needsPayment, collectedTransactionId == nil, let onPaymentRequired {
                 guard let txnId = await onPaymentRequired(tier, pricing) else {
                     step = .tierSelection
                     return
                 }
-                paymentTransactionId = txnId
-            }
-
-            let request = RegistrationRequest(
-                email: email,
-                username: username.isEmpty ? email : username,
-                firstName: firstName,
-                lastName: lastName,
-                password: password,
-                appId: resolvedAppId,
-                platform: "ios",
-                deviceInfo: PlatformDetection.deviceInfo(),
-                registrationToken: registrationToken.isEmpty ? nil : registrationToken
-            )
-
-            // Register: token flow when a token was supplied, open flow otherwise.
-            var auth: AuthenticationResponse
-            if !registrationToken.isEmpty {
-                auth = try await client.auth.registerWithToken(request)
-            } else {
-                let result = try await client.auth.registerOpen(request)
-                guard result.success else {
-                    throw WildwoodError(message: result.message, status: 0, code: .validationError)
+                collectedTransactionId = txnId
+                if let userId = client.session.userId {
+                    _ = await client.payment.linkTransactionToUser(externalTransactionId: txnId, userId: userId)
                 }
-                auth = AuthenticationResponse(id: result.userId ?? "", userId: result.userId ?? "", email: email)
             }
 
-            // Token-less registration → authenticate with the new credentials.
-            if auth.jwtToken.isEmpty {
-                auth = try await client.auth.login(
-                    LoginRequest(
-                        username: username.isEmpty ? email : username,
-                        email: email,
-                        password: password,
-                        appId: resolvedAppId,
-                        platform: "ios",
-                        deviceInfo: PlatformDetection.deviceInfo()
-                    )
-                )
-            }
-            client.session.login(auth)
-
-            // Link the payment transaction to the new user before subscribing.
-            if let paymentTransactionId, let userId = client.session.userId {
-                _ = await client.payment.linkTransactionToUser(
-                    externalTransactionId: paymentTransactionId,
-                    userId: userId
-                )
-            }
-
-            let subscribeResult = try await client.appTier.selfSubscribe(
+            let subscribeResult = try? await client.appTier.selfSubscribe(
                 appId: resolvedAppId,
                 appTierId: tier.id,
                 appTierPricingId: pricing?.id,
-                paymentTransactionId: paymentTransactionId
+                paymentTransactionId: collectedTransactionId
             )
 
-            guard subscribeResult.success else {
-                throw WildwoodError(message: subscribeResult.errorMessage, status: 0, code: .unknown)
+            // A subscribe failure is non-fatal (JS parity): the account exists
+            // and a session is active — the tier can be chosen later.
+            if subscribeResult?.success != true {
+                let detail = subscribeResult?.errorMessage ?? "The subscription could not be completed."
+                warningMessage = "Your account was created, but the subscription didn't go through: \(detail) You can choose a plan later."
+                onSignupError?(detail)
             }
 
             step = .done
-            onSignupComplete?(auth, subscribeResult)
+            onSignupComplete?(auth, subscribeResult?.success == true ? subscribeResult : nil)
         } catch {
             let message = (error as? WildwoodError)?.message ?? error.localizedDescription
             errorMessage = message
             step = .tierSelection
             onSignupError?(message)
         }
+    }
+
+    private func registerAndLogin(client: WildwoodClient, appId resolvedAppId: String) async throws -> AuthenticationResponse {
+        let request = RegistrationRequest(
+            email: email,
+            username: username.isEmpty ? email : username,
+            firstName: firstName,
+            lastName: lastName,
+            password: password,
+            appId: resolvedAppId,
+            platform: "ios",
+            deviceInfo: PlatformDetection.deviceInfo(),
+            registrationToken: registrationToken.isEmpty ? nil : registrationToken
+        )
+
+        // Register: token flow when a token was supplied, open flow otherwise.
+        var auth: AuthenticationResponse
+        if !registrationToken.isEmpty {
+            auth = try await client.auth.registerWithToken(request)
+        } else {
+            let result = try await client.auth.registerOpen(request)
+            guard result.success else {
+                throw WildwoodError(message: result.message, status: 0, code: .validationError)
+            }
+            auth = AuthenticationResponse(id: result.userId ?? "", userId: result.userId ?? "", email: email)
+        }
+
+        // Token-less registration → authenticate with the new credentials.
+        if auth.jwtToken.isEmpty {
+            auth = try await client.auth.login(
+                LoginRequest(
+                    username: username.isEmpty ? email : username,
+                    email: email,
+                    password: password,
+                    appId: resolvedAppId,
+                    platform: "ios",
+                    deviceInfo: PlatformDetection.deviceInfo()
+                )
+            )
+        }
+        client.session.login(auth)
+        return auth
     }
 }
 #endif
