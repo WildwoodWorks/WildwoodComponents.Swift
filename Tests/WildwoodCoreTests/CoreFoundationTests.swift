@@ -123,19 +123,17 @@ struct WildwoodErrorTests {
 
 // MARK: - HTTP client
 
-@MainActor
-@Suite(.serialized)
 struct HttpClientTests {
     @Test func reactive401RefreshesAndRetriesOnce() async throws {
-        MockURLProtocol.reset()
-        let config = WildwoodConfig(baseUrl: "https://unit.test", enableRetry: true, maxRetryAttempts: 3)
-        let http = WildwoodHttpClient(config: config, urlSession: MockURLProtocol.makeSession())
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
 
         // First call 401s; after "refresh" the stub is swapped to success.
-        MockURLProtocol.stub("GET", "/api/secure", .init(statusCode: 401, json: #"{"message":"expired"}"#))
+        backend.stub("GET", "/api/secure", .init(statusCode: 401, json: #"{"message":"expired"}"#))
         await http.setTokenProvider { "token" }
         await http.setOn401Refresh {
-            MockURLProtocol.stub("GET", "/api/secure", .init(json: #"{"ok":true}"#))
+            backend.stub("GET", "/api/secure", .init(json: #"{"ok":true}"#))
             return true
         }
 
@@ -145,10 +143,10 @@ struct HttpClientTests {
     }
 
     @Test func clientErrorsAreNotRetried() async {
-        MockURLProtocol.reset()
-        let config = WildwoodConfig(baseUrl: "https://unit.test", enableRetry: true, maxRetryAttempts: 3)
-        let http = WildwoodHttpClient(config: config, urlSession: MockURLProtocol.makeSession())
-        MockURLProtocol.stub("GET", "/api/missing", .init(statusCode: 404, json: #"{"message":"nope"}"#))
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stub("GET", "/api/missing", .init(statusCode: 404, json: #"{"message":"nope"}"#))
 
         do {
             let _: EmptyBody = try await http.get("api/missing", skipAuth: true)
@@ -158,19 +156,19 @@ struct HttpClientTests {
         } catch {
             Issue.record("Unexpected error type")
         }
-        #expect(MockURLProtocol.requests().count == 1)
+        #expect(backend.requests().count == 1)
     }
 
     @Test func bearerTokenAndApiKeyHeadersAreAttached() async throws {
-        MockURLProtocol.reset()
-        let config = WildwoodConfig(baseUrl: "https://unit.test", apiKey: "api-key-1", enableRetry: false)
-        let http = WildwoodHttpClient(config: config, urlSession: MockURLProtocol.makeSession())
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, apiKey: "api-key-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
         await http.setTokenProvider { "bearer-token" }
-        MockURLProtocol.stub("GET", "/api/thing", .init(json: "{}"))
+        backend.stub("GET", "/api/thing", .init(json: "{}"))
 
         let _: EmptyBody = try await http.get("api/thing")
 
-        let headers = MockURLProtocol.requests().first?.headers ?? [:]
+        let headers = backend.requests().first?.headers ?? [:]
         #expect(headers["Authorization"] == "Bearer bearer-token")
         #expect(headers["X-API-Key"] == "api-key-1")
     }

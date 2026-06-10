@@ -6,19 +6,18 @@ import Testing
 @testable import WildwoodCore
 
 @MainActor
-@Suite(.serialized)
 struct AuthServiceTests {
-    private func makeService(storage: MemoryStorage = MemoryStorage()) -> (AuthService, MemoryStorage) {
-        MockURLProtocol.reset()
-        let config = WildwoodConfig(baseUrl: "https://unit.test", appId: "app-1", enableRetry: false)
-        let http = WildwoodHttpClient(config: config, urlSession: MockURLProtocol.makeSession())
+    private func makeService(storage: MemoryStorage = MemoryStorage()) -> (AuthService, MemoryStorage, MockBackend) {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
         let service = AuthService(http: http, storage: storage, events: WildwoodEventEmitter())
-        return (service, storage)
+        return (service, storage, backend)
     }
 
     @Test func loginStoresTokensAndUser() async throws {
-        let (service, storage) = makeService()
-        MockURLProtocol.stub("POST", "/api/auth/login", .init(json: """
+        let (service, storage, backend) = makeService()
+        backend.stub("POST", "/api/auth/login", .init(json: """
         {"id":"u1","userId":"u1","email":"a@b.c","firstName":"A","lastName":"B",
          "jwtToken":"jwt-123","refreshToken":"refresh-456","requiresTwoFactor":false,
          "requiresPasswordReset":false,"roles":[],"permissions":[],"requiresDisclaimerAcceptance":false}
@@ -33,8 +32,8 @@ struct AuthServiceTests {
     }
 
     @Test func loginWithTwoFactorDoesNotStoreTokens() async throws {
-        let (service, storage) = makeService()
-        MockURLProtocol.stub("POST", "/api/auth/login", .init(json: """
+        let (service, storage, backend) = makeService()
+        backend.stub("POST", "/api/auth/login", .init(json: """
         {"requiresTwoFactor":true,"twoFactorSessionId":"2fa-session",
          "availableTwoFactorMethods":[{"providerType":"Email","name":"Email","icon":""}]}
         """))
@@ -47,12 +46,12 @@ struct AuthServiceTests {
     }
 
     @Test func loginSendsPascalCaseDto() async throws {
-        let (service, _) = makeService()
-        MockURLProtocol.stub("POST", "/api/auth/login", .init(json: #"{"jwtToken":"t","refreshToken":"r"}"#))
+        let (service, _, backend) = makeService()
+        backend.stub("POST", "/api/auth/login", .init(json: #"{"jwtToken":"t","refreshToken":"r"}"#))
 
         _ = try await service.login(LoginRequest(username: "user", password: "pw", appId: "app-1"))
 
-        let request = MockURLProtocol.requests().first
+        let request = backend.requests().first
         let body = String(data: request?.body ?? Data(), encoding: .utf8) ?? ""
         #expect(body.contains("\"Username\":\"user\""))
         #expect(body.contains("\"AppId\":\"app-1\""))
@@ -63,8 +62,8 @@ struct AuthServiceTests {
         let storage = MemoryStorage()
         storage.setItem(WildwoodStorageKeys.refreshToken, "stale")
         storage.setItem(WildwoodStorageKeys.accessToken, "stale-access")
-        let (service, _) = makeService(storage: storage)
-        MockURLProtocol.stub("POST", "/api/auth/refresh-token", .init(statusCode: 401, json: #"{"message":"expired"}"#))
+        let (service, _, backend) = makeService(storage: storage)
+        backend.stub("POST", "/api/auth/refresh-token", .init(statusCode: 401, json: #"{"message":"expired"}"#))
 
         let refreshed = await service.refreshToken()
 
@@ -76,8 +75,8 @@ struct AuthServiceTests {
     @Test func refreshTokenKeepsStorageOnServerError() async throws {
         let storage = MemoryStorage()
         storage.setItem(WildwoodStorageKeys.refreshToken, "still-good")
-        let (service, _) = makeService(storage: storage)
-        MockURLProtocol.stub("POST", "/api/auth/refresh-token", .init(statusCode: 503, json: "{}"))
+        let (service, _, backend) = makeService(storage: storage)
+        backend.stub("POST", "/api/auth/refresh-token", .init(statusCode: 503, json: "{}"))
 
         let refreshed = await service.refreshToken()
 
@@ -86,8 +85,8 @@ struct AuthServiceTests {
     }
 
     @Test func registerWithTokenNormalizesTokenlessSuccess() async throws {
-        let (service, storage) = makeService()
-        MockURLProtocol.stub("POST", "/api/userregistration/register-with-token", .init(json: """
+        let (service, storage, backend) = makeService()
+        backend.stub("POST", "/api/userregistration/register-with-token", .init(json: """
         {"success":true,"message":"ok","userId":"new-user-1"}
         """))
 
@@ -101,8 +100,8 @@ struct AuthServiceTests {
     }
 
     @Test func registerWithTokenThrowsOnFailure() async {
-        let (service, _) = makeService()
-        MockURLProtocol.stub("POST", "/api/userregistration/register-with-token", .init(json: """
+        let (service, _, backend) = makeService()
+        backend.stub("POST", "/api/userregistration/register-with-token", .init(json: """
         {"success":false,"message":"Token already used"}
         """))
 
@@ -114,8 +113,8 @@ struct AuthServiceTests {
     }
 
     @Test func getStoredUserRoundtrips() async throws {
-        let (service, _) = makeService()
-        MockURLProtocol.stub("POST", "/api/auth/login", .init(json: """
+        let (service, _, backend) = makeService()
+        backend.stub("POST", "/api/auth/login", .init(json: """
         {"id":"u9","userId":"u9","email":"round@trip.io","jwtToken":"jwt","refreshToken":"r",
          "roles":["Admin"],"permissions":["x"]}
         """))

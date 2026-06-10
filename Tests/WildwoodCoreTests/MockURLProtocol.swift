@@ -1,62 +1,70 @@
 // URLProtocol stub for HttpClient/service tests — requests never leave the
-// process; handlers are registered per-path.
+// process. Each test creates a MockBackend with a unique host, so suites can
+// run in parallel without clobbering each other's stubs.
 
 import Foundation
 import Synchronization
 @testable import WildwoodCore
 
-final class MockURLProtocol: URLProtocol {
-    struct StubResponse {
-        var statusCode: Int
-        var body: Data
-        var headers: [String: String]
+struct StubResponse {
+    var statusCode: Int
+    var body: Data
+    var headers: [String: String]
 
-        init(statusCode: Int = 200, body: Data = Data(), headers: [String: String] = ["Content-Type": "application/json"]) {
-            self.statusCode = statusCode
-            self.body = body
-            self.headers = headers
-        }
-
-        init(statusCode: Int = 200, json: String) {
-            self.init(statusCode: statusCode, body: Data(json.utf8))
-        }
+    init(statusCode: Int = 200, body: Data = Data(), headers: [String: String] = ["Content-Type": "application/json"]) {
+        self.statusCode = statusCode
+        self.body = body
+        self.headers = headers
     }
 
-    struct RecordedRequest: Sendable {
-        var method: String
-        var path: String
-        var headers: [String: String]
-        var body: Data?
+    init(statusCode: Int = 200, json: String) {
+        self.init(statusCode: statusCode, body: Data(json.utf8))
+    }
+}
+
+struct RecordedRequest: Sendable {
+    var method: String
+    var host: String
+    var path: String
+    var headers: [String: String]
+    var body: Data?
+}
+
+/// Per-test stub registry bound to a unique host.
+final class MockBackend: Sendable {
+    let host: String
+
+    var baseUrl: String { "https://\(host)" }
+
+    init() {
+        host = "test-\(UUID().uuidString.lowercased()).local"
     }
 
-    // Handlers keyed by "METHOD path" (path without query); a default handler key of "*" catches everything else.
-    nonisolated(unsafe) static let handlers = Mutex<[String: StubResponse]>([:])
-    nonisolated(unsafe) static let recorded = Mutex<[RecordedRequest]>([])
-
-    static func reset() {
-        handlers.withLock { $0 = [:] }
-        recorded.withLock { $0 = [] }
+    func stub(_ method: String, _ path: String, _ response: StubResponse) {
+        MockURLProtocol.handlers.withLock { $0["\(method) \(host) \(path)"] = response }
     }
 
-    static func stub(_ method: String, _ path: String, _ response: StubResponse) {
-        handlers.withLock { $0["\(method) \(path)"] = response }
+    func requests() -> [RecordedRequest] {
+        MockURLProtocol.recorded.withLock { $0.filter { $0.host == host } }
     }
 
-    static func requests() -> [RecordedRequest] {
-        recorded.withLock { $0 }
-    }
-
-    static func makeSession() -> URLSession {
+    func makeSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
         return URLSession(configuration: config)
     }
+}
+
+final class MockURLProtocol: URLProtocol {
+    static let handlers = Mutex<[String: StubResponse]>([:])
+    static let recorded = Mutex<[RecordedRequest]>([])
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
         let method = request.httpMethod ?? "GET"
+        let host = request.url?.host() ?? ""
         let path = request.url?.path ?? ""
 
         var bodyData = request.httpBody
@@ -80,10 +88,10 @@ final class MockURLProtocol: URLProtocol {
             headers[key] = value
         }
         Self.recorded.withLock {
-            $0.append(RecordedRequest(method: method, path: path, headers: headers, body: bodyData))
+            $0.append(RecordedRequest(method: method, host: host, path: path, headers: headers, body: bodyData))
         }
 
-        let stub = Self.handlers.withLock { $0["\(method) \(path)"] ?? $0["*"] }
+        let stub = Self.handlers.withLock { $0["\(method) \(host) \(path)"] }
             ?? StubResponse(statusCode: 404, json: #"{"message":"no stub registered"}"#)
 
         let response = HTTPURLResponse(
