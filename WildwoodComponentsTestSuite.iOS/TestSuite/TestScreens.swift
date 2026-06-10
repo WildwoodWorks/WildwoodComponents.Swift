@@ -131,9 +131,9 @@ struct TestScreenHost: View {
 
         case .usageDashboard:
             VStack(spacing: 16) {
-                OverageSummaryComponent {
+                OverageSummaryComponent(onUpgradeRequested: {
                     lastEvent = "Upgrade requested from overage summary"
-                }
+                })
                 UsageDashboardComponent()
             }
 
