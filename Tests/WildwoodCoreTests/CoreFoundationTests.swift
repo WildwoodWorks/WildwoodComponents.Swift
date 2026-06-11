@@ -159,6 +159,16 @@ struct HttpClientTests {
         #expect(backend.requests().count == 1)
     }
 
+    @Test func emptyBodyDecodesToNilForOptionalTargets() async throws {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stub("GET", "/api/empty", .init(statusCode: 200, body: Data()))
+
+        let value: EmptyBody? = try await http.get("api/empty", skipAuth: true)
+        #expect(value == nil)
+    }
+
     @Test func bearerTokenAndApiKeyHeadersAreAttached() async throws {
         let backend = MockBackend()
         let config = WildwoodConfig(baseUrl: backend.baseUrl, apiKey: "api-key-1", enableRetry: false)

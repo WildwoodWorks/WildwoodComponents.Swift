@@ -49,13 +49,16 @@ struct AuthServiceTests {
         let (service, _, backend) = makeService()
         backend.stub("POST", "/api/auth/login", .init(json: #"{"jwtToken":"t","refreshToken":"r"}"#))
 
-        _ = try await service.login(LoginRequest(username: "user", password: "pw", appId: "app-1"))
+        _ = try await service.login(
+            LoginRequest(username: "user", password: "pw", appId: "app-1", captchaResponse: "captcha-tok")
+        )
 
         let request = backend.requests().first
         let body = String(data: request?.body ?? Data(), encoding: .utf8) ?? ""
         #expect(body.contains("\"Username\":\"user\""))
         #expect(body.contains("\"AppId\":\"app-1\""))
         #expect(body.contains("\"AppVersion\":\"1.0.0\""))
+        #expect(body.contains("\"CaptchaResponse\":\"captcha-tok\""))
     }
 
     @Test func refreshTokenClearsStorageOn401() async throws {

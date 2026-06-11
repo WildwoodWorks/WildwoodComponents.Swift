@@ -230,9 +230,16 @@ public actor WildwoodHttpClient {
     }
 
     private func decode<T: Decodable>(_ data: Data) throws -> T {
-        // Tolerate empty bodies for optional-shaped responses (mirrors JS returning undefined on 204).
-        if data.isEmpty, let empty = EmptyBody() as? T {
-            return empty
+        // Tolerate empty bodies (204 / no content) the way the JS client
+        // yields undefined: optional-typed targets decode to nil, and the
+        // EmptyBody marker type decodes to itself.
+        if data.isEmpty {
+            if let nilLiteralType = T.self as? any ExpressibleByNilLiteral.Type {
+                return nilLiteralType.init(nilLiteral: ()) as! T
+            }
+            if let empty = EmptyBody() as? T {
+                return empty
+            }
         }
         do {
             return try WildwoodJSON.decoder().decode(T.self, from: data)

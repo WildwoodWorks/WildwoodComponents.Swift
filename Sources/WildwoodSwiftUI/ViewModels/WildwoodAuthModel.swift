@@ -62,6 +62,11 @@ public final class WildwoodAuthModel {
     // Forgot password
     public var forgotEmail = ""
 
+    // CAPTCHA: solved token (single-use) and a counter the widget uses as its
+    // identity, so a fresh challenge renders after every consumed token.
+    public var captchaToken: String?
+    public private(set) var captchaAttempt = 0
+
     // Auth response held between views (2FA / reset / disclaimers)
     public private(set) var pendingAuth: AuthenticationResponse?
 
@@ -138,6 +143,26 @@ public final class WildwoodAuthModel {
         authConfig?.allowPasswordReset ?? true
     }
 
+    public var requiresLoginCaptcha: Bool {
+        captchaUsable && captchaConfig?.requireForLogin == true
+    }
+
+    public var requiresRegistrationCaptcha: Bool {
+        captchaUsable && captchaConfig?.requireForRegistration == true
+    }
+
+    private var captchaUsable: Bool {
+        captchaConfig?.isEnabled == true && captchaConfig?.siteKey?.isEmpty == false
+    }
+
+    /// Tokens are single-use: drop the token after a submit attempt and bump
+    /// the attempt counter so the widget re-issues a challenge.
+    private func consumeCaptchaToken() {
+        guard captchaToken != nil else { return }
+        captchaToken = nil
+        captchaAttempt += 1
+    }
+
     // MARK: - Helpers
 
     public func clearMessages() {
@@ -202,7 +227,10 @@ public final class WildwoodAuthModel {
     public func handleLogin() async {
         clearMessages()
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            consumeCaptchaToken()
+        }
         do {
             let response = try await client.auth.login(
                 LoginRequest(
@@ -211,6 +239,7 @@ public final class WildwoodAuthModel {
                     password: password,
                     appId: appId,
                     rememberMe: rememberMe,
+                    captchaResponse: captchaToken,
                     platform: platform,
                     deviceInfo: deviceInfo
                 )
@@ -228,7 +257,10 @@ public final class WildwoodAuthModel {
             return
         }
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            consumeCaptchaToken()
+        }
         do {
             let response = try await client.auth.register(
                 RegistrationRequest(
@@ -239,7 +271,8 @@ public final class WildwoodAuthModel {
                     password: regPassword,
                     appId: appId ?? "",
                     platform: platform,
-                    deviceInfo: deviceInfo
+                    deviceInfo: deviceInfo,
+                    captchaResponse: captchaToken
                 )
             )
             processAuthResponse(response)

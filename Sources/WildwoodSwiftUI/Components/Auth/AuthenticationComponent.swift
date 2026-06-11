@@ -108,6 +108,10 @@ private struct AuthFlowView: View {
             Toggle("Remember me", isOn: $model.rememberMe)
                 .font(.subheadline)
 
+            if model.requiresLoginCaptcha {
+                captchaSection
+            }
+
             Button {
                 Task { await model.handleLogin() }
             } label: {
@@ -118,7 +122,10 @@ private struct AuthFlowView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(model.isLoading || model.username.isEmpty || model.password.isEmpty)
+            .disabled(
+                model.isLoading || model.username.isEmpty || model.password.isEmpty
+                    || (model.requiresLoginCaptcha && model.captchaToken == nil)
+            )
 
             if !model.providers.isEmpty {
                 providerButtons
@@ -191,6 +198,38 @@ private struct AuthFlowView: View {
         }
     }
 
+    /// CAPTCHA challenge host. Invisible providers (reCAPTCHA v3) run in a
+    /// zero-height web view and post the token automatically; checkbox-style
+    /// providers (hCaptcha, Turnstile) get visible space. The `.id` ties the
+    /// widget to the attempt counter so a consumed token re-issues a challenge.
+    @ViewBuilder private var captchaSection: some View {
+        if let config = model.captchaConfig {
+            let isInvisible = !["hcaptcha", "turnstile"].contains(config.providerType.lowercased())
+            VStack(alignment: .leading, spacing: 4) {
+                CaptchaWebView(configuration: config) { token in
+                    model.captchaToken = token
+                }
+                .frame(height: isInvisible ? 1 : 90)
+                .opacity(isInvisible ? 0 : 1)
+                .id(model.captchaAttempt)
+
+                if model.captchaToken != nil {
+                    Label("Verification complete", systemImage: "checkmark.shield")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else if !isInvisible {
+                    Text("Complete the verification above to continue.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Verifying…", systemImage: "shield")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
     static func extractProviderToken(from url: URL) -> String? {
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let candidates = ["providerToken", "provider_token", "token", "access_token", "code"]
@@ -235,6 +274,10 @@ private struct AuthFlowView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if model.requiresRegistrationCaptcha {
+                captchaSection
+            }
+
             Button {
                 Task { await model.handleRegister() }
             } label: {
@@ -245,7 +288,10 @@ private struct AuthFlowView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(model.isLoading || model.regEmail.isEmpty || model.regPassword.isEmpty)
+            .disabled(
+                model.isLoading || model.regEmail.isEmpty || model.regPassword.isEmpty
+                    || (model.requiresRegistrationCaptcha && model.captchaToken == nil)
+            )
 
             Button("Already have an account? Sign in") { model.toggleMode() }
                 .font(.footnote)

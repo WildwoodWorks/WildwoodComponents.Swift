@@ -53,6 +53,7 @@ public final class AuthService: Sendable {
             let ProviderName: String?
             let ProviderToken: String?
             let TrustedDeviceToken: String?
+            let CaptchaResponse: String?
             let AppVersion: String
         }
 
@@ -66,6 +67,7 @@ public final class AuthService: Sendable {
             ProviderName: request.providerName,
             ProviderToken: request.providerToken,
             TrustedDeviceToken: request.trustedDeviceToken,
+            CaptchaResponse: request.captchaResponse,
             AppVersion: request.appVersion ?? defaultAppVersion
         )
 
