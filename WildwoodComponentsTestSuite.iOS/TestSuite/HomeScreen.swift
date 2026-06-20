@@ -18,6 +18,7 @@ enum TestScreen: String, CaseIterable, Identifiable {
     case subscriptionAdmin = "Subscription Admin"
     case usageDashboard = "Usage Dashboard"
     case disclaimer = "Disclaimers"
+    case consent = "Consent"
     case feedback = "Feedback"
     case theme = "Theme"
 
@@ -40,6 +41,7 @@ enum TestScreen: String, CaseIterable, Identifiable {
         case .subscriptionAdmin: return "gearshape.2"
         case .usageDashboard: return "gauge.with.dots.needle.50percent"
         case .disclaimer: return "doc.text"
+        case .consent: return "hand.raised"
         case .feedback: return "exclamationmark.bubble"
         case .theme: return "paintpalette"
         }

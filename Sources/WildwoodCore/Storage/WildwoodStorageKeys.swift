@@ -10,6 +10,11 @@ public enum WildwoodStorageKeys {
     public static let sessionExpiry = "ww_session_expiry"
     public static let theme = "ww_theme"
 
+    /// First-party consent blob (the native analog of the JS Consent SDK's `ww_consent` cookie).
+    /// Stored in UserDefaults via CompositeStorage. Treated as a cookie name by the Sync parity
+    /// check, so it is excluded from the cross-stack localStorage-key comparison.
+    public static let consent = "ww_consent"
+
     /// Prefix for per-thread message draft keys (`ww_draft_{threadId}` in the JS SDK).
     public static let draftPrefix = "ww_draft_"
 

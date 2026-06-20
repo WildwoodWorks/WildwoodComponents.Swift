@@ -143,6 +143,15 @@ struct TestScreenHost: View {
                 onError: { error in lastEvent = "Error: \(error)" }
             )
 
+        case .consent:
+            ConsentComponent(
+                onConsentChanged: { state in
+                    let granted = ConsentCategory.nonNecessary.filter { state.categories[$0] == true }.map(\.rawValue)
+                    lastEvent = "Consent updated: \(granted.isEmpty ? "necessary only" : granted.joined(separator: ", "))"
+                },
+                onError: { error in lastEvent = "Error: \(error)" }
+            )
+
         case .feedback:
             FeedbackComponent(
                 pageContext: "testsuite://feedback",

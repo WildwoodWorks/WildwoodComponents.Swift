@@ -21,6 +21,7 @@ public final class WildwoodClient {
     @ObservationIgnored public let disclaimer: DisclaimerService
     @ObservationIgnored public let appTier: AppTierService
     @ObservationIgnored public let feedback: FeedbackService
+    @ObservationIgnored public let consent: ConsentService
     public let theme: ThemeService
     public let events: WildwoodEventEmitter
 
@@ -45,6 +46,7 @@ public final class WildwoodClient {
         self.disclaimer = DisclaimerService(http: http, defaultAppId: config.appId ?? "")
         self.appTier = AppTierService(http: http)
         self.feedback = FeedbackService(http: http, defaultAppId: config.appId ?? "")
+        self.consent = ConsentService(http: http, storage: storage, defaultAppId: config.appId ?? "")
         self.theme = ThemeService(storage: storage, events: events)
     }
 
