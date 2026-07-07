@@ -82,6 +82,129 @@ public actor WildwoodHttpClient {
         try await request(method: "POST", path: path, bodyData: encode(body), skipAuth: skipAuth, timeout: timeout)
     }
 
+    /// Server-sent-events POST for streaming endpoints (AI flow runs). Sends
+    /// the request, then feeds each response body line (newline-delimited,
+    /// CR stripped, empty lines included — SSE frame delimiters matter) to
+    /// `onLine`; return false from the handler to stop reading early (e.g.
+    /// after a terminal SSE event). A trailing unterminated line is delivered
+    /// too. Non-2xx responses throw WildwoodError, with a single refresh +
+    /// replay on 401 like the JSON verbs (a still-failing 401 means the
+    /// refresh flow already emitted its session-expired signal). Returns the
+    /// response Content-Type so callers can detect a plain-JSON (non-SSE)
+    /// resolution body; for non-SSE responses the body is not read and
+    /// `onLine` is never invoked.
+    ///
+    /// `timeout` is URLSession's idle timeout between chunks — flow nodes can
+    /// work for a long time between events, so callers pass a generous value.
+    public func post(
+        _ path: String,
+        body: some Encodable & Sendable,
+        skipAuth: Bool = false,
+        timeout: TimeInterval? = nil,
+        onLine: @Sendable (String) async -> Bool
+    ) async throws -> String {
+        let bodyData = try encode(body)
+        let url = try joinUrl(base: config.baseUrl, path: path)
+
+        for attempt in 0..<2 {
+            var urlRequest = URLRequest(url: url)
+            urlRequest.httpMethod = "POST"
+            urlRequest.timeoutInterval = timeout ?? config.requestTimeoutSeconds
+            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            if let apiKey = config.apiKey {
+                urlRequest.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+            }
+            if !skipAuth, let tokenProvider, let token = await tokenProvider() {
+                urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            urlRequest.httpBody = bodyData
+
+            let bytes: URLSession.AsyncBytes
+            let response: URLResponse
+            do {
+                (bytes, response) = try await urlSession.bytes(for: urlRequest)
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                throw CancellationError()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let urlError as URLError where urlError.code == .timedOut {
+                throw WildwoodError(message: "Request timed out", status: 0, code: .timeout)
+            } catch {
+                throw WildwoodError(message: error.localizedDescription, status: 0, code: .networkError)
+            }
+
+            guard let http = response as? HTTPURLResponse else {
+                throw WildwoodError(message: "Invalid response", status: 0, code: .networkError)
+            }
+
+            // Reactive 401 handling: refresh token and replay once, mirroring request().
+            if http.statusCode == 401, !skipAuth, attempt == 0, let on401Refresh, await on401Refresh() {
+                continue
+            }
+
+            guard (200..<300).contains(http.statusCode) else {
+                var errorBody = Data()
+                do {
+                    for try await byte in bytes {
+                        errorBody.append(byte)
+                        if errorBody.count >= 64_000 { break }
+                    }
+                } catch {
+                    // Body read failed — report the status alone.
+                }
+                throw WildwoodError.fromResponse(
+                    status: http.statusCode,
+                    body: errorBody.isEmpty ? nil : errorBody,
+                    fallbackMessage: HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                )
+            }
+
+            let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? ""
+            guard contentType.lowercased().hasPrefix("text/event-stream") else {
+                return contentType
+            }
+
+            // Manual line splitting: AsyncLineSequence-style helpers can drop
+            // the empty lines that delimit SSE frames, so split on \n (safe —
+            // UTF-8 continuation bytes are always >= 0x80) and strip a
+            // trailing \r ourselves.
+            do {
+                var lineBuffer: [UInt8] = []
+                var stopped = false
+                for try await byte in bytes {
+                    if byte == 0x0A {
+                        if lineBuffer.last == 0x0D { lineBuffer.removeLast() }
+                        let line = String(decoding: lineBuffer, as: UTF8.self)
+                        lineBuffer.removeAll(keepingCapacity: true)
+                        if await onLine(line) == false {
+                            stopped = true
+                            break
+                        }
+                    } else {
+                        lineBuffer.append(byte)
+                    }
+                }
+                if !stopped, !lineBuffer.isEmpty {
+                    _ = await onLine(String(decoding: lineBuffer, as: UTF8.self))
+                }
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                throw CancellationError()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let urlError as URLError where urlError.code == .timedOut {
+                throw WildwoodError(message: "Request timed out", status: 0, code: .timeout)
+            } catch {
+                throw WildwoodError(message: error.localizedDescription, status: 0, code: .networkError)
+            }
+            return contentType
+        }
+
+        // Only reachable when the 401 replay came back 401 again without a
+        // refresh attempt left; surface it like any other auth failure.
+        throw WildwoodError(message: "Not authorized", status: 401)
+    }
+
     /// Multipart/form-data POST for file uploads.
     public func postMultipart<T: Decodable & Sendable>(
         _ path: String,

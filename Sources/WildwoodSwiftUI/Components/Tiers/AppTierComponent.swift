@@ -120,9 +120,14 @@ public struct AppTierComponent: View {
             errorMessage = "AppTierComponent requires an appId."
             return
         }
-        async let sub = client.appTier.getUserSubscription(appId: resolvedAppId)
         async let loadedTiers = client.appTier.getTiers(appId: resolvedAppId)
-        subscription = await sub
+        do {
+            // nil = genuinely no subscription; a failed lookup throws and
+            // keeps the last-known value instead of flashing "no plan".
+            subscription = try await client.appTier.getUserSubscription(appId: resolvedAppId)
+        } catch {
+            errorMessage = (error as? WildwoodError)?.message ?? error.localizedDescription
+        }
         tiers = await loadedTiers.sorted { $0.displayOrder < $1.displayOrder }
     }
 }

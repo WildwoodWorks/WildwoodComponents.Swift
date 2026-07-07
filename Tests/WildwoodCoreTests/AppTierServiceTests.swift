@@ -34,13 +34,28 @@ struct AppTierServiceTests {
         #expect(await service.getTiers(appId: "app-1").isEmpty)
     }
 
-    @Test func getUserSubscriptionReturnsNilForEmptyAppIdWithoutRequest() async {
+    @Test func getUserSubscriptionReturnsNilForEmptyAppIdWithoutRequest() async throws {
         let (service, backend) = makeService()
 
-        let sub = await service.getUserSubscription(appId: "")
+        let sub = try await service.getUserSubscription(appId: "")
 
         #expect(sub == nil)
         #expect(backend.requests().isEmpty)
+    }
+
+    @Test func getUserSubscriptionReturnsNilForNoContentButThrowsOnFailure() async throws {
+        let (service, backend) = makeService()
+        // Empty 2xx body → "no subscription", not an error.
+        backend.stub("GET", "/api/app-tiers/app-1/my-subscription", .init(statusCode: 204, body: Data()))
+        #expect(try await service.getUserSubscription(appId: "app-1") == nil)
+
+        // A failed lookup must be distinguishable from "no subscription" —
+        // subscribed users were shown "no plan" banners on transient errors
+        // when both resolved to nil.
+        let (service2, _) = makeService() // no stub → 404
+        await #expect(throws: WildwoodError.self) {
+            _ = try await service2.getUserSubscription(appId: "app-1")
+        }
     }
 
     @Test func changeTierPostsPascalCasePayload() async throws {
@@ -59,21 +74,62 @@ struct AppTierServiceTests {
         #expect(body["PaymentTransactionId"] as? String == "txn-9")
     }
 
-    @Test func cancelSubscriptionReturnsTrueThenFalse() async {
+    @Test func cancelSubscriptionSurfacesTheScheduledPayloadAndReportsFailures() async {
         let (service, backend) = makeService()
-        backend.stub("POST", "/api/app-tiers/app-1/my-subscription/cancel", .init(statusCode: 200))
-        #expect(await service.cancelSubscription(appId: "app-1") == true)
+        backend.stub(
+            "POST", "/api/app-tiers/app-1/my-subscription/cancel",
+            .init(json: #"{"isScheduled":true,"effectiveDate":"2026-08-01T00:00:00Z","requiresUserAction":true,"userActionInstructions":"Cancel in App Store settings."}"#)
+        )
 
-        let (service2, _) = makeService() // no stub -> false
-        #expect(await service2.cancelSubscription(appId: "app-1") == false)
+        let result = await service.cancelSubscription(appId: "app-1")
+        #expect(result.success == true)
+        #expect(result.isScheduled == true)
+        #expect(result.effectiveDate != nil)
+        #expect(result.requiresUserAction == true)
+        #expect(result.userActionInstructions == "Cancel in App Store settings.")
+
+        let failed = await service.cancelSubscription(appId: "app-2") // no stub → 404
+        #expect(failed.success == false)
+        #expect(failed.errorMessage?.isEmpty == false)
     }
 
-    @Test func getUserFeaturesReturnsTheFeatureMap() async {
+    @Test func cancelSubscriptionSucceedsOnAnEmpty2xxBody() async {
+        let (service, backend) = makeService()
+        backend.stub("POST", "/api/app-tiers/app-1/my-subscription/cancel", .init(statusCode: 200, body: Data()))
+
+        let result = await service.cancelSubscription(appId: "app-1")
+
+        #expect(result.success == true)
+        #expect(result.isScheduled == false)
+    }
+
+    @Test func companyAndUserCancelsShareTheCancelResultShape() async {
+        let (service, backend) = makeService()
+        backend.stub("POST", "/api/app-tiers/app-1/cancel/company/c1", .init(json: #"{"isScheduled":false}"#))
+        backend.stub("POST", "/api/app-tiers/app-1/cancel/u1", .init(json: #"{"isScheduled":true}"#))
+
+        let company = await service.cancelCompanySubscription(appId: "app-1", companyId: "c1")
+        #expect(company.success == true)
+        #expect(company.isScheduled == false)
+
+        let user = await service.cancelUserSubscription(appId: "app-1", userId: "u1")
+        #expect(user.success == true)
+        #expect(user.isScheduled == true)
+    }
+
+    @Test func getUserFeaturesReturnsTheFeatureMapAndThrowsOnFailure() async throws {
         let (service, backend) = makeService()
         backend.stub("GET", "/api/app-tiers/app-1/user-features", .init(json: #"{"chat":true,"payments":false}"#))
 
-        let features = await service.getUserFeatures(appId: "app-1")
+        let features = try await service.getUserFeatures(appId: "app-1")
 
         #expect(features == ["chat": true, "payments": false])
+
+        // Failures must not masquerade as an empty (= no access) map —
+        // feature gates would lock entitled users out during transient errors.
+        let (service2, _) = makeService() // no stub → 404
+        await #expect(throws: WildwoodError.self) {
+            _ = try await service2.getUserFeatures(appId: "app-1")
+        }
     }
 }

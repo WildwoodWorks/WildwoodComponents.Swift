@@ -15,6 +15,16 @@ public struct SignupWithSubscriptionComponent: View {
     }
 
     private let appId: String?
+    /// Tier to preselect in the plans step (matched case-insensitively).
+    private let preSelectedTierId: String?
+    /// Pricing option to preselect within the pre-selected tier (e.g. the
+    /// annual option chosen on a pricing page); falls back to the tier's
+    /// default pricing, then its first.
+    private let preSelectedPricingId: String?
+    /// Show the optional registration-token field on the account step when
+    /// tokens are optional (open registration allowed). Default true. When
+    /// tokens are the only registration path the field always shows.
+    private let showOptionalTokenEntry: Bool
     /// Called when the selected tier requires payment before subscribing.
     /// Return a payment transaction id (e.g. from PaymentComponent / StoreKit),
     /// or nil to cancel. When absent, paid tiers subscribe without a transaction
@@ -45,11 +55,17 @@ public struct SignupWithSubscriptionComponent: View {
 
     public init(
         appId: String? = nil,
+        preSelectedTierId: String? = nil,
+        preSelectedPricingId: String? = nil,
+        showOptionalTokenEntry: Bool = true,
         onPaymentRequired: ((AppTierModel, AppTierPricingModel?) async -> String?)? = nil,
         onSignupComplete: ((AuthenticationResponse, AppTierChangeResultModel?) -> Void)? = nil,
         onSignupError: ((String) -> Void)? = nil
     ) {
         self.appId = appId
+        self.preSelectedTierId = preSelectedTierId
+        self.preSelectedPricingId = preSelectedPricingId
+        self.showOptionalTokenEntry = showOptionalTokenEntry
         self.onPaymentRequired = onPaymentRequired
         self.onSignupComplete = onSignupComplete
         self.onSignupError = onSignupError
@@ -125,7 +141,10 @@ public struct SignupWithSubscriptionComponent: View {
                 .textFieldStyle(.roundedBorder)
                 .textContentType(.newPassword)
 
-            if authConfig?.allowTokenRegistration == true {
+            // The optional token entry is suppressible (showOptionalTokenEntry);
+            // when tokens are the only registration path the field always shows.
+            if authConfig?.allowTokenRegistration == true,
+               showOptionalTokenEntry || authConfig?.allowOpenRegistration != true {
                 TextField(
                     authConfig?.allowOpenRegistration == true
                         ? "Registration token (optional)"
@@ -198,6 +217,21 @@ public struct SignupWithSubscriptionComponent: View {
         async let loadedTiers = client.appTier.getTiers(appId: resolvedAppId)
         authConfig = await config
         tiers = await loadedTiers.sorted { $0.displayOrder < $1.displayOrder }
+
+        // Preselect the requested tier's pricing: explicit pricing id →
+        // the tier's default → its first option (ids matched case-insensitively).
+        if let preSelectedTierId,
+           let tier = tiers.first(where: { $0.id.lowercased() == preSelectedTierId.lowercased() }) {
+            let pricing =
+                preSelectedPricingId.flatMap { pricingId in
+                    tier.pricingOptions.first { $0.id.lowercased() == pricingId.lowercased() }
+                }
+                ?? tier.pricingOptions.first(where: \.isDefault)
+                ?? tier.pricingOptions.first
+            if let pricing {
+                selectedPricingByTier[tier.id] = pricing.id
+            }
+        }
     }
 
     // MARK: - Signup pipeline

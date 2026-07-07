@@ -12,6 +12,11 @@ public struct TokenRegistrationComponent: View {
 
     private let appId: String?
     private let prefilledToken: String?
+    /// Show the token entry field. Default true. This component always
+    /// requires a token to register, so hosts that pass false should supply
+    /// `prefilledToken` (mirrors React's showOptionalTokenEntry, which
+    /// suppresses user-visible token entry without disabling token use).
+    private let showOptionalTokenEntry: Bool
     private let onRegistrationSuccess: ((AuthenticationResponse) -> Void)?
     private let onRegistrationError: ((String) -> Void)?
 
@@ -30,11 +35,13 @@ public struct TokenRegistrationComponent: View {
     public init(
         appId: String? = nil,
         prefilledToken: String? = nil,
+        showOptionalTokenEntry: Bool = true,
         onRegistrationSuccess: ((AuthenticationResponse) -> Void)? = nil,
         onRegistrationError: ((String) -> Void)? = nil
     ) {
         self.appId = appId
         self.prefilledToken = prefilledToken
+        self.showOptionalTokenEntry = showOptionalTokenEntry
         self.onRegistrationSuccess = onRegistrationSuccess
         self.onRegistrationError = onRegistrationError
     }
@@ -53,15 +60,17 @@ public struct TokenRegistrationComponent: View {
                     .foregroundStyle(.green)
             }
 
-            HStack {
-                TextField("Registration token", text: $token)
-                    .textFieldStyle(.roundedBorder)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .onChange(of: token) { tokenValid = nil }
-                if let tokenValid {
-                    Image(systemName: tokenValid ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundStyle(tokenValid ? .green : .red)
+            if showOptionalTokenEntry {
+                HStack {
+                    TextField("Registration token", text: $token)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: token) { tokenValid = nil }
+                    if let tokenValid {
+                        Image(systemName: tokenValid ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(tokenValid ? .green : .red)
+                    }
                 }
             }
 

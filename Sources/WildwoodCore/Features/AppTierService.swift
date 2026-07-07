@@ -53,9 +53,13 @@ public final class AppTierService: Sendable {
 
     // MARK: - User subscription
 
-    public func getUserSubscription(appId: String?) async -> UserTierSubscriptionModel? {
+    /// The user's active subscription, or nil ONLY when none exists
+    /// (204/empty body). THROWS on transport/HTTP failure so callers can
+    /// distinguish "no subscription" from a failed lookup — swallowing both
+    /// as nil made subscribed users look unsubscribed during transient errors.
+    public func getUserSubscription(appId: String?) async throws -> UserTierSubscriptionModel? {
         guard let appId, !appId.isEmpty else { return nil }
-        return try? await http.get("api/app-tiers/\(appId)/my-subscription")
+        return try await http.get("api/app-tiers/\(appId)/my-subscription")
     }
 
     public func getUserAddOns(appId: String) async -> [UserAddOnSubscriptionModel] {
@@ -118,12 +122,31 @@ public final class AppTierService: Sendable {
         )
     }
 
-    public func cancelSubscription(appId: String) async -> Bool {
+    /// Self-service cancellation. On 2xx the cancellation succeeded — the
+    /// payload reports whether it is scheduled for the end of the billing
+    /// period (isScheduled + effectiveDate) or immediate, and whether the
+    /// user must also act in their store (requiresUserAction — App Store
+    /// billing can't be stopped server-side). Failures are reported via
+    /// success/errorMessage, never thrown.
+    public func cancelSubscription(appId: String) async -> AppTierCancelResultModel {
+        await cancelResult { try await self.http.post("api/app-tiers/\(appId)/my-subscription/cancel") }
+    }
+
+    /// Shared POST handling for the three cancel endpoints: 2xx → payload
+    /// with success=true (an empty 2xx body still succeeds); failure →
+    /// success=false + errorMessage instead of being silently swallowed.
+    private func cancelResult(
+        _ send: () async throws -> AppTierCancelResultModel?
+    ) async -> AppTierCancelResultModel {
         do {
-            try await http.postVoid("api/app-tiers/\(appId)/my-subscription/cancel")
-            return true
+            var result = try await send() ?? AppTierCancelResultModel()
+            result.success = true
+            return result
         } catch {
-            return false
+            return AppTierCancelResultModel(
+                success: false,
+                errorMessage: (error as? WildwoodError)?.message ?? error.localizedDescription
+            )
         }
     }
 
@@ -224,8 +247,12 @@ public final class AppTierService: Sendable {
 
     // MARK: - Feature gating
 
-    public func getUserFeatures(appId: String) async -> [String: Bool] {
-        let data: [String: Bool]? = try? await http.get("api/app-tiers/\(appId)/user-features")
+    /// The user's feature entitlement map. THROWS on transport/HTTP failure:
+    /// an empty map is a real "no access" answer, so failures must stay
+    /// distinguishable from it — swallowing them made feature gates lock
+    /// entitled users out during transient errors.
+    public func getUserFeatures(appId: String) async throws -> [String: Bool] {
+        let data: [String: Bool]? = try await http.get("api/app-tiers/\(appId)/user-features")
         return data ?? [:]
     }
 
@@ -313,13 +340,8 @@ public final class AppTierService: Sendable {
         )
     }
 
-    public func cancelCompanySubscription(appId: String, companyId: String) async -> Bool {
-        do {
-            try await http.postVoid("api/app-tiers/\(appId)/cancel/company/\(companyId)")
-            return true
-        } catch {
-            return false
-        }
+    public func cancelCompanySubscription(appId: String, companyId: String) async -> AppTierCancelResultModel {
+        await cancelResult { try await self.http.post("api/app-tiers/\(appId)/cancel/company/\(companyId)") }
     }
 
     public func subscribeCompanyToAddOn(appId: String, companyId: String, addOnId: String) async -> Bool {
@@ -398,13 +420,8 @@ public final class AppTierService: Sendable {
         try await changeTierAdvanced(appId: appId, userId: userId, newTierId: newTierId, newPricingId: pricingId, immediate: immediate)
     }
 
-    public func cancelUserSubscription(appId: String, userId: String) async -> Bool {
-        do {
-            try await http.postVoid("api/app-tiers/\(appId)/cancel/\(userId)")
-            return true
-        } catch {
-            return false
-        }
+    public func cancelUserSubscription(appId: String, userId: String) async -> AppTierCancelResultModel {
+        await cancelResult { try await self.http.post("api/app-tiers/\(appId)/cancel/\(userId)") }
     }
 
     public func subscribeUserToAddOn(appId: String, userId: String, addOnId: String) async -> Bool {
