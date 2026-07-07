@@ -52,10 +52,20 @@ struct AppTierServiceTests {
         // A failed lookup must be distinguishable from "no subscription" —
         // subscribed users were shown "no plan" banners on transient errors
         // when both resolved to nil.
-        let (service2, _) = makeService() // no stub → 404
+        let (service2, backend2) = makeService()
+        backend2.stub("GET", "/api/app-tiers/app-1/my-subscription", .init(statusCode: 500, json: #"{"message":"boom"}"#))
         await #expect(throws: WildwoodError.self) {
             _ = try await service2.getUserSubscription(appId: "app-1")
         }
+    }
+
+    @Test func getUserSubscriptionTreats404AsNoSubscription() async throws {
+        // 404 = "no subscription" per backend behavior — a real answer, not a
+        // transient failure, so it maps to nil instead of throwing.
+        let (service, backend) = makeService()
+        backend.stub("GET", "/api/app-tiers/app-1/my-subscription", .init(statusCode: 404, json: #"{"message":"No subscription found"}"#))
+
+        #expect(try await service.getUserSubscription(appId: "app-1") == nil)
     }
 
     @Test func changeTierPostsPascalCasePayload() async throws {

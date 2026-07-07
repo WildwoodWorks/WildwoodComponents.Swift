@@ -45,7 +45,11 @@ public final class WildwoodAIFlowModel {
     // fire a SwiftUI update per token.
     @ObservationIgnored private var streamBuffer = ""
     @ObservationIgnored private var lastFlush = ContinuousClock.now
-    @ObservationIgnored private var runTask: Task<Void, Never>?
+    /// Internal (not private) so tests can await a run's completion.
+    @ObservationIgnored private(set) var runTask: Task<Void, Never>?
+    /// The interrupt payload saved across a resolve() attempt — restored when
+    /// the resume fails so the review panel returns and the user can retry.
+    @ObservationIgnored private var interruptAwaitingRetry: String?
 
     public init(client: WildwoodClient, settings: AIFlowSettings = AIFlowSettings()) {
         self.settings = settings
@@ -112,17 +116,13 @@ public final class WildwoodAIFlowModel {
             return
         }
 
-        isRunning = true
-        runTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let result = await self.service.runFlow(
+        startRun { model in
+            await model.service.runFlow(
                 flowId: flow.id,
                 inputJson: inputJson,
-                threadId: self.threadId,
-                onEvent: { [weak self] event in self?.handleEvent(event) }
+                threadId: model.threadId,
+                onEvent: { [weak model] event in model?.handleEvent(event) }
             )
-            await self.finishRun(result)
-            self.isRunning = false
         }
     }
 
@@ -170,19 +170,19 @@ public final class WildwoodAIFlowModel {
 
     private func resolve(approve: Bool, valueJson: String?) {
         guard let runId = activeRunId, !runId.isEmpty, !isRunning else { return }
+        // Save the interrupt across the attempt: if the resume FAILS (network
+        // error, 5xx…) the interrupt is still pending server-side — finishRun
+        // restores it so the Approve/Reject panel returns and the user can retry.
+        interruptAwaitingRetry = pendingInterrupt
         pendingInterrupt = nil
         isEditingResume = false
-        isRunning = true
-        runTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let result = await self.service.resolveInterrupt(
+        startRun { model in
+            await model.service.resolveInterrupt(
                 runId: runId,
                 approve: approve,
                 valueJson: valueJson,
-                onEvent: { [weak self] event in self?.handleEvent(event) }
+                onEvent: { [weak model] event in model?.handleEvent(event) }
             )
-            await self.finishRun(result)
-            self.isRunning = false
         }
     }
 
@@ -223,7 +223,20 @@ public final class WildwoodAIFlowModel {
         }
     }
 
-    private func finishRun(_ result: AIFlowRunResult) async {
+    /// Shared run/resolve scaffolding: owns isRunning, the cancellable
+    /// runTask, and finishRun. `operation` receives the model instead of
+    /// capturing it so the running task never keeps a dismissed view's model
+    /// alive (a flow node can work for minutes).
+    private func startRun(_ operation: @escaping @MainActor @Sendable (WildwoodAIFlowModel) async -> AIFlowRunResult) {
+        isRunning = true
+        runTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let result = await operation(self)
+            self.finishRun(result)
+        }
+    }
+
+    private func finishRun(_ result: AIFlowRunResult) {
         // Materialize tokens that arrived after the last throttled flush.
         streamText = streamBuffer
         if let runId = result.runId, !runId.isEmpty { activeRunId = runId }
@@ -232,11 +245,22 @@ public final class WildwoodAIFlowModel {
         if result.status != "interrupted" {
             pendingInterrupt = nil
         }
+        if result.status == "failed", let saved = interruptAwaitingRetry {
+            // A failed resume never resolved the interrupt server-side —
+            // restore it (after the clear above) so the review panel returns.
+            pendingInterrupt = saved
+        }
+        interruptAwaitingRetry = nil
         self.result = result
         if result.status != "interrupted" {
             onRunCompleted?(result)
         }
-        await loadHistory()
+        // Unlock the UI now; run history is an enrichment — refresh it in a
+        // fire-and-forget task instead of blocking on the extra GET.
+        isRunning = false
+        Task { @MainActor [weak self] in
+            await self?.loadHistory()
+        }
     }
 
     /// Refresh the current thread's run history. Best-effort: history is an
@@ -254,6 +278,7 @@ public final class WildwoodAIFlowModel {
         streamBuffer = ""
         activeNode = nil
         pendingInterrupt = nil
+        interruptAwaitingRetry = nil
         isEditingResume = false
         resumeEditValue = ""
         errorMessage = ""

@@ -107,31 +107,22 @@ public actor WildwoodHttpClient {
         let url = try joinUrl(base: config.baseUrl, path: path)
 
         for attempt in 0..<2 {
-            var urlRequest = URLRequest(url: url)
-            urlRequest.httpMethod = "POST"
-            urlRequest.timeoutInterval = timeout ?? config.requestTimeoutSeconds
-            urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            urlRequest.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            if let apiKey = config.apiKey {
-                urlRequest.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
-            }
-            if !skipAuth, let tokenProvider, let token = await tokenProvider() {
-                urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            urlRequest.httpBody = bodyData
+            let urlRequest = await buildRequest(
+                method: "POST",
+                url: url,
+                bodyData: bodyData,
+                skipAuth: skipAuth,
+                timeout: timeout,
+                contentType: "application/json",
+                accept: "text/event-stream"
+            )
 
             let bytes: URLSession.AsyncBytes
             let response: URLResponse
             do {
                 (bytes, response) = try await urlSession.bytes(for: urlRequest)
-            } catch let urlError as URLError where urlError.code == .cancelled {
-                throw CancellationError()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let urlError as URLError where urlError.code == .timedOut {
-                throw WildwoodError(message: "Request timed out", status: 0, code: .timeout)
             } catch {
-                throw WildwoodError(message: error.localizedDescription, status: 0, code: .networkError)
+                throw Self.mapTransportError(error)
             }
 
             guard let http = response as? HTTPURLResponse else {
@@ -139,7 +130,7 @@ public actor WildwoodHttpClient {
             }
 
             // Reactive 401 handling: refresh token and replay once, mirroring request().
-            if http.statusCode == 401, !skipAuth, attempt == 0, let on401Refresh, await on401Refresh() {
+            if await shouldRetryAfter401(status: http.statusCode, skipAuth: skipAuth, attempt: attempt) {
                 continue
             }
 
@@ -169,8 +160,15 @@ public actor WildwoodHttpClient {
             // the empty lines that delimit SSE frames, so split on \n (safe —
             // UTF-8 continuation bytes are always >= 0x80) and strip a
             // trailing \r ourselves.
+            //
+            // Deliberately per-byte: AsyncBytes has no chunk API, and bridging
+            // a delegate-based chunk reader would bypass the injected session.
+            // The cost is one buffer append per byte, softened by the reserved
+            // capacity below; correctness (empty-line preservation, partial
+            // tail carry, early stop) beats raw throughput here.
             do {
                 var lineBuffer: [UInt8] = []
+                lineBuffer.reserveCapacity(4096)
                 var stopped = false
                 for try await byte in bytes {
                     if byte == 0x0A {
@@ -188,14 +186,8 @@ public actor WildwoodHttpClient {
                 if !stopped, !lineBuffer.isEmpty {
                     _ = await onLine(String(decoding: lineBuffer, as: UTF8.self))
                 }
-            } catch let urlError as URLError where urlError.code == .cancelled {
-                throw CancellationError()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let urlError as URLError where urlError.code == .timedOut {
-                throw WildwoodError(message: "Request timed out", status: 0, code: .timeout)
             } catch {
-                throw WildwoodError(message: error.localizedDescription, status: 0, code: .networkError)
+                throw Self.mapTransportError(error)
             }
             return contentType
         }
@@ -265,10 +257,8 @@ public actor WildwoodHttpClient {
                 lastError = error
 
                 // Reactive 401 handling: refresh token and retry once.
-                if error.status == 401, !skipAuth, let on401Refresh, attempt == 0 {
-                    if await on401Refresh() {
-                        continue
-                    }
+                if await shouldRetryAfter401(status: error.status, skipAuth: skipAuth, attempt: attempt) {
+                    continue
                 }
 
                 // Only retry on 5xx or network errors, not 4xx.
@@ -295,31 +285,21 @@ public actor WildwoodHttpClient {
         timeout: TimeInterval?,
         contentType: String
     ) async throws -> Data {
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = method
-        urlRequest.timeoutInterval = timeout ?? config.requestTimeoutSeconds
-        urlRequest.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        if let apiKey = config.apiKey {
-            urlRequest.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
-        }
-        if !skipAuth, let tokenProvider, let token = await tokenProvider() {
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        urlRequest.httpBody = bodyData
+        let urlRequest = await buildRequest(
+            method: method,
+            url: url,
+            bodyData: bodyData,
+            skipAuth: skipAuth,
+            timeout: timeout,
+            contentType: contentType
+        )
 
         let data: Data
         let response: URLResponse
         do {
             (data, response) = try await urlSession.data(for: urlRequest)
-        } catch let urlError as URLError where urlError.code == .cancelled {
-            // Task cancellation must not be swallowed into a retryable network error.
-            throw CancellationError()
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let urlError as URLError where urlError.code == .timedOut {
-            throw WildwoodError(message: "Request timed out", status: 0, code: .timeout)
         } catch {
-            throw WildwoodError(message: error.localizedDescription, status: 0, code: .networkError)
+            throw Self.mapTransportError(error)
         }
 
         guard let http = response as? HTTPURLResponse else {
@@ -338,6 +318,60 @@ public actor WildwoodHttpClient {
     }
 
     // MARK: - Helpers
+
+    /// Header/body assembly shared by the JSON pipeline and the SSE post:
+    /// Content-Type, optional Accept, X-API-Key, and Bearer-token injection
+    /// (skipped when `skipAuth`), plus the per-request timeout override.
+    private func buildRequest(
+        method: String,
+        url: URL,
+        bodyData: Data?,
+        skipAuth: Bool,
+        timeout: TimeInterval?,
+        contentType: String,
+        accept: String? = nil
+    ) async -> URLRequest {
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = method
+        urlRequest.timeoutInterval = timeout ?? config.requestTimeoutSeconds
+        urlRequest.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        if let accept {
+            urlRequest.setValue(accept, forHTTPHeaderField: "Accept")
+        }
+        if let apiKey = config.apiKey {
+            urlRequest.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        }
+        if !skipAuth, let tokenProvider, let token = await tokenProvider() {
+            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        urlRequest.httpBody = bodyData
+        return urlRequest
+    }
+
+    /// Single reactive refresh + replay, shared by request() and the SSE
+    /// post: true only for a first-attempt 401 on an authenticated call whose
+    /// token refresh succeeded — the caller then replays the request once.
+    private func shouldRetryAfter401(status: Int, skipAuth: Bool, attempt: Int) async -> Bool {
+        guard status == 401, !skipAuth, attempt == 0, let on401Refresh else { return false }
+        return await on401Refresh()
+    }
+
+    /// Transport-error mapping shared by every URLSession call site: task
+    /// cancellation must never be swallowed into a retryable network error,
+    /// timeouts get the typed .timeout code, everything else is .networkError.
+    private static func mapTransportError(_ error: any Error) -> any Error {
+        if error is CancellationError {
+            return CancellationError()
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .cancelled: return CancellationError()
+            case .timedOut: return WildwoodError(message: "Request timed out", status: 0, code: .timeout)
+            default: break
+            }
+        }
+        return WildwoodError(message: error.localizedDescription, status: 0, code: .networkError)
+    }
 
     private func joinUrl(base: String, path: String) throws -> URL {
         let normalizedBase = base.hasSuffix("/") ? String(base.dropLast()) : base

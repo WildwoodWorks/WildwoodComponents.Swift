@@ -157,7 +157,7 @@ final class AIFlowStreamParser: Sendable {
     }
 
     /// Feed one SSE line. Returns whether the transport should keep reading —
-    /// false once a terminal event (done/error/interrupt) has been dispatched.
+    /// false once a terminal event (done/error) has been dispatched.
     func handleLine(_ line: String, onEvent: AIFlowService.EventHandler?) async -> Bool {
         let frame: (name: String, dataText: String)? = state.withLock { s in
             if line.hasPrefix("event: ") {
@@ -222,7 +222,7 @@ final class AIFlowStreamParser: Sendable {
         }
     }
 
-    /// Returns true when the event is terminal (done/interrupt/error). All
+    /// Returns true when the event is terminal (done/error). All
     /// property reads are guarded — a truncated/unparseable frame leaves
     /// `data` nil and must never crash the stream.
     private func dispatch(name: String, dataText: String, onEvent: AIFlowService.EventHandler?) async -> Bool {
@@ -245,11 +245,13 @@ final class AIFlowStreamParser: Sendable {
                 }
                 s.terminal = true
             case "interrupt":
+                // NOT terminal: Blazor/JS keep consuming post-interrupt frames
+                // (e.g. usage) and only stop on done/error; the server closes
+                // the stream when it has nothing more to send.
                 s.result.status = "interrupted"
                 if let payload = obj?["payload"] {
                     s.result.interruptPayloadJson = payload.rawJSONString
                 }
-                s.terminal = true
             case "error":
                 s.result.status = "failed"
                 s.result.errorMessage = obj?["message"]?.stringValue ?? "Run failed"
