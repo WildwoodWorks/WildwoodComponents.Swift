@@ -54,12 +54,19 @@ public final class AppTierService: Sendable {
     // MARK: - User subscription
 
     /// The user's active subscription, or nil ONLY when none exists
-    /// (204/empty body). THROWS on transport/HTTP failure so callers can
+    /// (204/empty body, or 404 — the backend answers "no subscription" with
+    /// 404). THROWS on every other transport/HTTP failure so callers can
     /// distinguish "no subscription" from a failed lookup — swallowing both
     /// as nil made subscribed users look unsubscribed during transient errors.
     public func getUserSubscription(appId: String?) async throws -> UserTierSubscriptionModel? {
         guard let appId, !appId.isEmpty else { return nil }
-        return try await http.get("api/app-tiers/\(appId)/my-subscription")
+        do {
+            return try await http.get("api/app-tiers/\(appId)/my-subscription")
+        } catch let error as WildwoodError where error.status == 404 {
+            // 404 = "no subscription" per backend behavior — a real answer,
+            // not a failure. Transient failures (5xx/network/timeout) still throw.
+            return nil
+        }
     }
 
     public func getUserAddOns(appId: String) async -> [UserAddOnSubscriptionModel] {

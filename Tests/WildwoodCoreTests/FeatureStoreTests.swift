@@ -1,7 +1,8 @@
 // FeatureStore behavior mirrored from react-shared's useFeatures tests:
 // one bulk fetch, UPPERCASE key normalization for case-insensitive lookup,
 // fail-open while unknown/failed, failures never cached, TTL caching with a
-// refresh bypass, and invalidation dropping every cached map.
+// refresh bypass, and LAZY invalidation (clear + epoch bump, never an eager
+// refetch; logout clears without even the epoch bump).
 
 import Foundation
 import Testing
@@ -66,17 +67,79 @@ struct FeatureStoreTests {
         #expect(store.hasFeature("A") == false)
     }
 
-    @Test func invalidateDropsEveryCachedMap() async {
+    @Test func invalidateClearsSynchronouslyBumpsTheEpochAndNeverFetches() async {
         let (store, backend) = makeStore()
         backend.stub("GET", "/api/app-tiers/app-1/user-features", .init(json: #"{"a":true}"#))
         await store.load()
         #expect(store.features() != nil)
+        #expect(backend.requests().count == 1)
+        let epochBefore = store.epoch
 
         store.invalidate()
 
-        // Cleared synchronously — gates fail open until the refetch lands.
+        // Cleared synchronously — gates fail open until an on-demand reload lands.
         #expect(store.features() == nil)
         #expect(store.hasFeature("A") == true)
+        // Lazy invalidation: the epoch bump re-runs mounted gates' .task; the
+        // store itself must NOT eagerly refetch.
+        #expect(store.epoch == epochBefore + 1)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(backend.requests().count == 1)
+
+        // The next on-demand load() goes back to the network (TTL dropped
+        // with the entry) and repopulates the map.
+        backend.stub("GET", "/api/app-tiers/app-1/user-features", .init(json: #"{"a":false}"#))
+        await store.load()
+        #expect(store.state() == .loaded)
+        #expect(store.hasFeature("A") == false)
+        #expect(backend.requests().count == 2)
+    }
+
+    @Test func loginAuthChangeInvalidatesAndBumpsTheEpoch() async {
+        let backend = MockBackend()
+        let events = WildwoodEventEmitter()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        let store = FeatureStore(appTier: AppTierService(http: http), defaultAppId: "app-1", events: events)
+
+        backend.stub("GET", "/api/app-tiers/app-1/user-features", .init(json: #"{"a":true}"#))
+        await store.load()
+        let epochBefore = store.epoch
+
+        events.emit(.authChanged(AuthenticationResponse(userId: "u2")))
+
+        // The old user's entitlements must not gate the new one; the epoch
+        // bump makes mounted gates reload on demand.
+        #expect(store.features() == nil)
+        #expect(store.epoch == epochBefore + 1)
+    }
+
+    @Test func logoutOnlyClearsNoEpochBumpNoFetchAndGatesFailOpen() async {
+        let backend = MockBackend()
+        let events = WildwoodEventEmitter()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        let store = FeatureStore(appTier: AppTierService(http: http), defaultAppId: "app-1", events: events)
+
+        backend.stub("GET", "/api/app-tiers/app-1/user-features", .init(json: #"{"a":false}"#))
+        await store.load()
+        #expect(store.hasFeature("A") == false)
+        let epochBefore = store.epoch
+
+        events.emit(.sessionExpired)
+
+        // Cleared and failing open — but NO epoch bump (mounted gates must
+        // not refetch: a fetch without a session can only 401) and NO request.
+        #expect(store.features() == nil)
+        #expect(store.state() == .failed)
+        #expect(store.hasFeature("A") == true)
+        #expect(store.epoch == epochBefore)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(backend.requests().count == 1)
+
+        // .authChanged(nil) behaves the same way.
+        events.emit(.authChanged(nil))
+        #expect(store.epoch == epochBefore)
     }
 
     @Test func missingAppIdFailsOpenInsteadOfLoadingForever() async {

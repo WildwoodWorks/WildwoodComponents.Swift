@@ -1,6 +1,6 @@
-// WildwoodAIFlowModel state tests (no network) — typed input parsing and
-// input-JSON building mirrored from the Blazor AIFlowComponent semantics,
-// plus resume-edit validation.
+// WildwoodAIFlowModel tests — typed input parsing and input-JSON building
+// mirrored from the Blazor AIFlowComponent semantics, resume-edit validation,
+// and the interrupt/resume lifecycle over a stubbed backend (TestBackend).
 
 import Foundation
 import Testing
@@ -89,5 +89,83 @@ struct AIFlowModelTests {
         #expect(model.result == nil)
         #expect(model.pendingInterrupt == nil)
         #expect(model.rawInput == "{}")
+    }
+
+    // MARK: - Resume failure restores the interrupt
+
+    @Test func failedResumeRestoresThePendingInterruptForRetry() async {
+        let backend = TestBackend()
+        backend.stub("GET", "/api/ai/flows", .init(json: #"[{"id":"f1","name":"Draft"}]"#))
+        backend.stub("POST", "/api/ai/flows/f1/runs/stream", .init(sse: """
+        event: run_started
+        data: {"runId":"r1","threadId":"t1"}
+
+        event: interrupt
+        data: {"payload":{"question":"Approve the draft?"}}
+
+        """))
+        // The resume attempt fails — the interrupt is still pending server-side.
+        backend.stub("POST", "/api/ai/flows/runs/r1/resume", .init(statusCode: 500, json: #"{"message":"boom"}"#))
+
+        let client = WildwoodClient(
+            config: WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false, storage: .memory),
+            urlSession: backend.makeSession()
+        )
+        let model = WildwoodAIFlowModel(client: client, settings: AIFlowSettings(showRunHistory: false))
+
+        await model.loadFlows() // auto-selects the only flow
+        model.run()
+        await model.runTask?.value
+        #expect(model.isRunning == false)
+        #expect(model.result?.status == "interrupted")
+        let interrupt = model.pendingInterrupt
+        #expect(interrupt?.contains("Approve the draft?") == true)
+
+        model.approve()
+        // Cleared while the resolution is in flight…
+        #expect(model.pendingInterrupt == nil)
+        await model.runTask?.value
+
+        // …but a FAILED resume restores it so the Approve/Reject panel
+        // returns and the user can retry (finishRun must not re-clear it).
+        #expect(model.result?.status == "failed")
+        #expect(model.pendingInterrupt == interrupt)
+        #expect(model.isRunning == false)
+    }
+
+    @Test func successfulResumeDoesNotRestoreTheInterrupt() async {
+        let backend = TestBackend()
+        backend.stub("GET", "/api/ai/flows", .init(json: #"[{"id":"f1","name":"Draft"}]"#))
+        backend.stub("POST", "/api/ai/flows/f1/runs/stream", .init(sse: """
+        event: run_started
+        data: {"runId":"r1","threadId":"t1"}
+
+        event: interrupt
+        data: {"payload":{"question":"Approve the draft?"}}
+
+        """))
+        backend.stub("POST", "/api/ai/flows/runs/r1/resume", .init(sse: """
+        event: done
+        data: {"status":"succeeded","output":"resumed"}
+
+        """))
+
+        let client = WildwoodClient(
+            config: WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false, storage: .memory),
+            urlSession: backend.makeSession()
+        )
+        let model = WildwoodAIFlowModel(client: client, settings: AIFlowSettings(showRunHistory: false))
+
+        await model.loadFlows()
+        model.run()
+        await model.runTask?.value
+        #expect(model.pendingInterrupt != nil)
+
+        model.approve()
+        await model.runTask?.value
+
+        #expect(model.result?.status == "succeeded")
+        #expect(model.pendingInterrupt == nil)
+        #expect(model.isRunning == false)
     }
 }

@@ -192,6 +192,32 @@ struct AIFlowServiceTests {
         #expect(result.interruptPayloadJson?.contains("Approve the draft?") == true)
     }
 
+    @Test func framesAfterAnInterruptAreStillConsumed() async {
+        // Interrupt is NOT terminal (parity with Blazor/JS): the server can
+        // still send frames like usage afterwards; only done/error stop the read.
+        let (service, backend) = makeService()
+        backend.stub("POST", "/api/ai/flows/f1/runs/stream", sse("""
+        event: run_started
+        data: {"runId":"r9","threadId":"t9"}
+
+        event: interrupt
+        data: {"payload":{"question":"Approve the draft?"}}
+
+        event: usage
+        data: {"totalTokens":13}
+
+        """))
+
+        let received = EventCollector()
+        let result = await service.runFlow(flowId: "f1", inputJson: "{}", onEvent: { received.append($0) })
+
+        #expect(result.status == "interrupted")
+        #expect(result.interruptPayloadJson?.contains("Approve the draft?") == true)
+        // The post-interrupt usage frame was consumed and counted.
+        #expect(result.totalTokens == 13)
+        #expect(received.events.map(\.event) == ["run_started", "interrupt", "usage"])
+    }
+
     @Test func errorEventProducesAFailedResult() async {
         let (service, backend) = makeService()
         backend.stub("POST", "/api/ai/flows/f1/runs/stream", sse("""

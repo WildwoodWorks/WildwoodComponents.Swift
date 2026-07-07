@@ -368,10 +368,11 @@ public final class WildwoodSubscriptionAdminModel {
 
     // MARK: - Helpers
 
-    /// Entitlement-changing mutations must also refresh FeatureGate instances
-    /// elsewhere in the app — otherwise they serve the pre-mutation plan for
-    /// the feature store's cache TTL (mirrors useSubscriptionAdmin's
-    /// invalidateFeatures wiring).
+    /// Entitlement-changing mutations must also invalidate the shared
+    /// FeatureStore — otherwise FeatureGates elsewhere in the app serve the
+    /// pre-mutation plan for the store's cache TTL (mirrors
+    /// useSubscriptionAdmin's invalidateFeatures wiring). Invalidation is
+    /// lazy: gates reload on demand via the store's epoch, no eager refetch.
     private func invalidateEntitlements() {
         client.features.invalidate()
     }

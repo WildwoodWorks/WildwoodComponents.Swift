@@ -44,6 +44,16 @@ public struct FeatureGate<Content: View, Fallback: View, LoadingFallback: View>:
         self.loadingFallback = loadingFallback()
     }
 
+    /// Task identity: the gate must reload when the feature OR the appId
+    /// changes, and after the store is invalidated (epoch bump) — the epoch
+    /// makes gates lazily re-run load() instead of the store eagerly
+    /// refetching for every cached app.
+    private struct ReloadTrigger: Hashable {
+        var feature: String
+        var appId: String?
+        var epoch: Int
+    }
+
     public var body: some View {
         Group {
             if let client {
@@ -60,7 +70,7 @@ public struct FeatureGate<Content: View, Fallback: View, LoadingFallback: View>:
                 content
             }
         }
-        .task(id: feature) {
+        .task(id: ReloadTrigger(feature: feature, appId: appId, epoch: client?.features.epoch ?? 0)) {
             await client?.features.load(appId: appId)
         }
     }
