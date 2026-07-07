@@ -79,6 +79,9 @@ struct TestScreenHost: View {
                 }
             }
 
+        case .aiFlow:
+            AIFlowTestScreen { event in lastEvent = event }
+
         case .messaging:
             if let appId = client?.config.appId, !appId.isEmpty {
                 SecureMessagingComponent(companyAppId: appId) { error in
@@ -207,6 +210,60 @@ struct TestScreenHost: View {
             systemImage: "exclamationmark.triangle",
             description: Text("Set the App ID in Settings to use this test.")
         )
+    }
+}
+
+// Mirrors the Blazor AIFlowTest.razor page: tweakable AIFlowSettings around a
+// live AIFlowComponent, with terminal results logged to the event panel.
+private struct AIFlowTestScreen: View {
+    let onEvent: (String) -> Void
+
+    @State private var fixedFlowId = ""
+    @State private var title = "AI Flows"
+    @State private var runLabel = "Run"
+    @State private var showLiveProgress = true
+    @State private var showRunHistory = true
+    @State private var showDebugInfo = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            GroupBox("Settings") {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextField("Fixed flow ID (blank = picker)", text: $fixedFlowId)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    TextField("Title", text: $title)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Run button label", text: $runLabel)
+                        .textFieldStyle(.roundedBorder)
+                    Toggle("Show live progress", isOn: $showLiveProgress)
+                    Toggle("Show run history", isOn: $showRunHistory)
+                    Toggle("Show debug info", isOn: $showDebugInfo)
+                }
+                .font(.caption)
+            }
+
+            AIFlowComponent(
+                settings: AIFlowSettings(
+                    flowId: fixedFlowId.isEmpty ? nil : fixedFlowId,
+                    showLiveProgress: showLiveProgress,
+                    showDebugInfo: showDebugInfo,
+                    showRunHistory: showRunHistory,
+                    title: title,
+                    runLabel: runLabel
+                ),
+                onRunCompleted: { result in
+                    onEvent(
+                        "Run completed: \(result.status) (\(result.totalTokens) tokens)"
+                            + (result.errorMessage.map { " — \($0)" } ?? "")
+                    )
+                }
+            )
+            // Recreate the component (and its model) when settings change —
+            // the Blazor test page re-keys the component the same way.
+            .id("\(fixedFlowId)|\(title)|\(runLabel)|\(showLiveProgress)|\(showRunHistory)|\(showDebugInfo)")
+        }
     }
 }
 

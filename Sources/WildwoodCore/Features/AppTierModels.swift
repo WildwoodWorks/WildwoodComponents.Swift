@@ -390,6 +390,51 @@ public struct AppTierChangeResultModel: Codable, Sendable, Equatable {
     }
 }
 
+/// Result of a subscription cancellation. isScheduled=true means access
+/// continues until effectiveDate (the end of the current billing period);
+/// false means access ended immediately. requiresUserAction is set for
+/// store-billed subscriptions (Apple App Store / Google Play): the platform
+/// cannot stop the store's billing — show userActionInstructions /
+/// userActionUrl so the user cancels in their store settings too.
+public struct AppTierCancelResultModel: Codable, Sendable, Equatable {
+    public var success: Bool
+    public var errorMessage: String?
+    public var isScheduled: Bool
+    public var effectiveDate: Date?
+    public var requiresUserAction: Bool
+    public var userActionUrl: String?
+    public var userActionInstructions: String?
+
+    public init(
+        success: Bool = false,
+        errorMessage: String? = nil,
+        isScheduled: Bool = false,
+        effectiveDate: Date? = nil,
+        requiresUserAction: Bool = false,
+        userActionUrl: String? = nil,
+        userActionInstructions: String? = nil
+    ) {
+        self.success = success
+        self.errorMessage = errorMessage
+        self.isScheduled = isScheduled
+        self.effectiveDate = effectiveDate
+        self.requiresUserAction = requiresUserAction
+        self.userActionUrl = userActionUrl
+        self.userActionInstructions = userActionInstructions
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        success = try c.decodeIfPresent(Bool.self, forKey: .success) ?? false
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+        isScheduled = try c.decodeIfPresent(Bool.self, forKey: .isScheduled) ?? false
+        effectiveDate = try c.decodeIfPresent(Date.self, forKey: .effectiveDate)
+        requiresUserAction = try c.decodeIfPresent(Bool.self, forKey: .requiresUserAction) ?? false
+        userActionUrl = try c.decodeIfPresent(String.self, forKey: .userActionUrl)
+        userActionInstructions = try c.decodeIfPresent(String.self, forKey: .userActionInstructions)
+    }
+}
+
 public struct AppFeatureOverrideModel: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var appId: String

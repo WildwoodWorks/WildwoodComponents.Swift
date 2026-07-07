@@ -10,6 +10,11 @@ import WildwoodCore
 public struct SubscriptionStatusPanel: View {
     @Bindable var model: WildwoodSubscriptionAdminModel
 
+    // Statuses from which the user can still cancel. Excluding Trialing/
+    // PastDue locked those subscribers out of cancelling entirely; Pending*
+    // changes are cancelled via the Plans panel.
+    private static let cancellableStatuses: Set<String> = ["Active", "Trialing", "PastDue"]
+
     public init(model: WildwoodSubscriptionAdminModel) {
         self.model = model
     }
@@ -21,11 +26,19 @@ public struct SubscriptionStatusPanel: View {
                     HStack {
                         Text(subscription.tierName).font(.title3.weight(.bold))
                         Spacer()
-                        Text(subscription.status)
+                        Text(Self.statusLabel(subscription.status))
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 8)
                             .padding(.vertical, 3)
-                            .background(.green.opacity(0.15), in: Capsule())
+                            .background(Self.statusColor(subscription.status).opacity(0.15), in: Capsule())
+                            .foregroundStyle(Self.statusColor(subscription.status))
+                        if subscription.isFreeTier {
+                            Text("Free")
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(.gray.opacity(0.15), in: Capsule())
+                        }
                     }
                     if !subscription.tierDescription.isEmpty {
                         Text(subscription.tierDescription).font(.subheadline).foregroundStyle(.secondary)
@@ -46,10 +59,39 @@ public struct SubscriptionStatusPanel: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 14))
 
-                Button("Cancel Subscription", role: .destructive) {
-                    Task { await model.cancelSubscription() }
+                // Scheduled cancellation notice.
+                if subscription.status == "PendingCancellation" {
+                    Label(pendingCancellationNotice(subscription), systemImage: "clock.badge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
-                .font(.subheadline)
+
+                // Store-billed subscriptions (App Store / Google Play) can't be
+                // stopped server-side — surface the store instructions/link.
+                if let cancel = model.lastCancelResult, cancel.success, cancel.requiresUserAction {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(
+                            cancel.userActionInstructions
+                                ?? "Also cancel this subscription in your store settings — store billing can't be stopped from here.",
+                            systemImage: "exclamationmark.triangle"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        if let urlString = cancel.userActionUrl, let url = URL(string: urlString) {
+                            Link("Open subscription settings", destination: url)
+                                .font(.caption)
+                        }
+                    }
+                    .padding(10)
+                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                }
+
+                if !subscription.isFreeTier, Self.cancellableStatuses.contains(subscription.status) {
+                    Button("Cancel Subscription", role: .destructive) {
+                        Task { await model.cancelSubscription() }
+                    }
+                    .font(.subheadline)
+                }
             } else {
                 ContentUnavailableView(
                     "No subscription",
@@ -57,6 +99,35 @@ public struct SubscriptionStatusPanel: View {
                     description: Text("Choose a plan from the Plans panel.")
                 )
             }
+        }
+    }
+
+    private func pendingCancellationNotice(_ subscription: UserTierSubscriptionModel) -> String {
+        var notice = "Your plan is cancelled"
+        if let date = subscription.pendingChangeDate ?? subscription.endDate {
+            notice += " and access continues until \(date.formatted(date: .abbreviated, time: .omitted))"
+        }
+        notice += ". Choose a plan from the Plans tab to stay subscribed."
+        return notice
+    }
+
+    static func statusLabel(_ status: String) -> String {
+        switch status {
+        case "PastDue": return "Past Due"
+        case "PendingUpgrade": return "Upgrade Scheduled"
+        case "PendingDowngrade": return "Downgrade Scheduled"
+        case "PendingCancellation": return "Cancellation Scheduled"
+        default: return status
+        }
+    }
+
+    static func statusColor(_ status: String) -> Color {
+        switch status {
+        case "Active": return .green
+        case "Trialing", "PendingUpgrade", "PendingDowngrade": return .blue
+        case "PastDue", "PendingCancellation": return .orange
+        case "Cancelled": return .red
+        default: return .gray
         }
     }
 

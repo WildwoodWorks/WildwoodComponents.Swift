@@ -61,4 +61,23 @@ public enum JSONValue: Codable, Sendable, Equatable {
         if case .object(let value) = self { return value }
         return nil
     }
+
+    /// Compact JSON text with sorted keys — the Swift analog of
+    /// System.Text.Json's JsonElement.GetRawText() (key order is normalized
+    /// rather than preserved).
+    public var rawJSONString: String? {
+        Self.encode(self, formatting: [.sortedKeys, .withoutEscapingSlashes])
+    }
+
+    /// Pretty-printed JSON text (sorted keys) for display surfaces.
+    public var prettyJSONString: String? {
+        Self.encode(self, formatting: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    }
+
+    private static func encode(_ value: JSONValue, formatting: JSONEncoder.OutputFormatting) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = formatting
+        guard let data = try? encoder.encode(value) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
 }

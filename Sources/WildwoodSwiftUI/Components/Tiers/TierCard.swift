@@ -85,12 +85,13 @@ public struct TierCardHeader: View {
             HStack {
                 Text(tier.name).font(.title3.weight(.bold))
                 if let badgeText = tier.customBadgeText, !badgeText.isEmpty {
-                    Text(badgeText)
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(badgeColor.opacity(0.2), in: Capsule())
-                        .foregroundStyle(badgeColor)
+                    badge(badgeText)
+                }
+                // Lifecycle status badge — "Active" is every publicly listed
+                // tier's status, so only non-default statuses (Beta,
+                // Deprecated, …) are informative enough to show.
+                if showStatusBadge {
+                    badge(tier.status)
                 }
                 Spacer()
                 if isCurrentTier {
@@ -122,8 +123,27 @@ public struct TierCardHeader: View {
         }
     }
 
+    private func badge(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(badgeColor.opacity(0.2), in: Capsule())
+            .foregroundStyle(badgeColor)
+    }
+
+    private var showStatusBadge: Bool {
+        !tier.badgeColor.isEmpty && !tier.status.isEmpty
+            && tier.status.trimmingCharacters(in: .whitespaces).lowercased() != "active"
+    }
+
+    /// badgeColor may be a raw CSS hex color ("#c9a227") or a semantic token
+    /// ("success"). rgb()/hsl() aren't supported — hex is what WildwoodAdmin
+    /// emits for raw colors.
     private var badgeColor: Color {
-        Color(hex: tier.badgeColor) ?? .accentColor
+        Color(hex: tier.badgeColor)
+            ?? Color(semanticBadgeToken: tier.badgeColor)
+            ?? .accentColor
     }
 }
 
@@ -178,8 +198,10 @@ public struct TierCardLimits: View {
     private func limitValueText(_ limit: AppTierLimitModel) -> String {
         if limit.isUnlimited { return "Unlimited" }
         if let display = limit.maxValueDisplay, !display.isEmpty { return display }
-        let value = limit.maxValue.formatted(.number.precision(.fractionLength(0)))
-        return limit.unit.isEmpty ? value : "\(value) \(limit.unit)"
+        // Unit intentionally omitted: "Active Pursuits: 5 pursuits" reads as
+        // noise — the value + display name already carry it. Units still show
+        // in usage dashboards.
+        return limit.maxValue.formatted(.number.precision(.fractionLength(0)))
     }
 }
 
@@ -234,6 +256,20 @@ extension Color {
             green: Double((rgb >> 8) & 0xFF) / 255,
             blue: Double(rgb & 0xFF) / 255
         )
+    }
+
+    /// Map the ecosystem's semantic badge tokens (ww-badge-success, …) to
+    /// system colors.
+    init?(semanticBadgeToken token: String) {
+        switch token.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "success": self = .green
+        case "danger": self = .red
+        case "warning": self = .orange
+        case "info": self = .blue
+        case "primary": self = .accentColor
+        case "secondary": self = .gray
+        default: return nil
+        }
     }
 }
 #endif

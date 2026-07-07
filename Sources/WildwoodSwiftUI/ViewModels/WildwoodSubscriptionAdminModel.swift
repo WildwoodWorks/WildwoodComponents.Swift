@@ -40,6 +40,11 @@ public final class WildwoodSubscriptionAdminModel {
     public private(set) var overrides: [AppFeatureOverrideModel] = []
     public private(set) var tierChangePreview: TierChangePreviewModel?
 
+    /// Result of the most recent cancel action. Surfaced so the status panel
+    /// can show requiresUserAction store instructions (App Store billing
+    /// can't be stopped server-side — the user must also cancel there).
+    public private(set) var lastCancelResult: AppTierCancelResultModel?
+
     public init(client: WildwoodClient, appId: String, scope: SubscriptionAdminScope = .currentUser) {
         self.client = client
         self.appId = appId
@@ -63,7 +68,14 @@ public final class WildwoodSubscriptionAdminModel {
     public func loadStatus() async {
         switch scope {
         case .currentUser:
-            subscription = await client.appTier.getUserSubscription(appId: appId)
+            do {
+                // nil = genuinely no subscription (204); lookup failures throw
+                // and keep the last-known subscription (stale beats
+                // wrongly-unsubscribed).
+                subscription = try await client.appTier.getUserSubscription(appId: appId)
+            } catch {
+                handleError(error)
+            }
         case .user(let userId):
             subscription = await client.appTier.getUserSubscriptionAdmin(appId: appId, userId: userId)
         case .company(let companyId):
@@ -81,7 +93,13 @@ public final class WildwoodSubscriptionAdminModel {
         featureDefinitions = await client.appTier.getActiveFeatureDefinitions(appId: appId)
         switch scope {
         case .currentUser:
-            features = await client.appTier.getUserFeatures(appId: appId)
+            do {
+                features = try await client.appTier.getUserFeatures(appId: appId)
+            } catch {
+                // Keep the stale map — a transient failure must not make
+                // entitled features look revoked.
+                handleError(error)
+            }
         case .user(let userId):
             features = await client.appTier.getUserFeaturesAdmin(appId: appId, userId: userId)
         case .company(let companyId):
@@ -191,6 +209,7 @@ public final class WildwoodSubscriptionAdminModel {
                     ? "Tier change scheduled for \(result.effectiveDate?.formatted(date: .abbreviated, time: .omitted) ?? "the next billing period")."
                     : "Tier changed to \(tier.name)."
                 tierChangePreview = nil
+                invalidateEntitlements()
                 await loadStatus()
                 await loadFeatures()
                 await loadLimits()
@@ -204,21 +223,29 @@ public final class WildwoodSubscriptionAdminModel {
 
     public func cancelSubscription() async {
         clearMessages()
-        let ok: Bool
+        let result: AppTierCancelResultModel
         switch scope {
         case .currentUser:
-            ok = await client.appTier.cancelSubscription(appId: appId)
+            result = await client.appTier.cancelSubscription(appId: appId)
         case .user(let userId):
-            ok = await client.appTier.cancelUserSubscription(appId: appId, userId: userId)
+            result = await client.appTier.cancelUserSubscription(appId: appId, userId: userId)
         case .company(let companyId):
-            ok = await client.appTier.cancelCompanySubscription(appId: appId, companyId: companyId)
+            result = await client.appTier.cancelCompanySubscription(appId: appId, companyId: companyId)
         }
-        if ok {
-            successMessage = "Subscription cancelled."
-            await loadStatus()
-        } else {
-            errorMessage = "Failed to cancel the subscription."
+        lastCancelResult = result
+
+        // The cancel endpoints report failures via success/errorMessage (they
+        // never throw) — surface them, or a failed cancel looks successful.
+        guard result.success else {
+            errorMessage = result.errorMessage ?? "Failed to cancel the subscription."
+            return
         }
+
+        successMessage = result.isScheduled
+            ? "Cancellation scheduled — access continues until \(result.effectiveDate?.formatted(date: .abbreviated, time: .omitted) ?? "the end of the billing period")."
+            : "Subscription cancelled."
+        invalidateEntitlements()
+        await loadStatus()
     }
 
     // MARK: - Add-ons
@@ -236,6 +263,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Subscribed to \(addOn.name)."
+            invalidateEntitlements()
             await loadAddOns()
         } else {
             errorMessage = "Failed to subscribe to \(addOn.name)."
@@ -255,6 +283,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Add-on cancelled."
+            invalidateEntitlements()
             await loadAddOns()
         } else {
             errorMessage = "Failed to cancel the add-on."
@@ -276,6 +305,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Limit updated."
+            invalidateEntitlements()
             await loadLimits()
         } else {
             errorMessage = "Failed to update the limit."
@@ -295,6 +325,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Usage reset."
+            invalidateEntitlements()
             await loadLimits()
         } else {
             errorMessage = "Failed to reset usage."
@@ -312,6 +343,7 @@ public final class WildwoodSubscriptionAdminModel {
         )
         if ok {
             successMessage = "Override saved."
+            invalidateEntitlements()
             await loadOverrides()
             await loadFeatures()
         } else {
@@ -326,6 +358,7 @@ public final class WildwoodSubscriptionAdminModel {
         )
         if ok {
             successMessage = "Override removed."
+            invalidateEntitlements()
             await loadOverrides()
             await loadFeatures()
         } else {
@@ -334,6 +367,14 @@ public final class WildwoodSubscriptionAdminModel {
     }
 
     // MARK: - Helpers
+
+    /// Entitlement-changing mutations must also refresh FeatureGate instances
+    /// elsewhere in the app — otherwise they serve the pre-mutation plan for
+    /// the feature store's cache TTL (mirrors useSubscriptionAdmin's
+    /// invalidateFeatures wiring).
+    private func invalidateEntitlements() {
+        client.features.invalidate()
+    }
 
     public func clearMessages() {
         errorMessage = ""
