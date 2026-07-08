@@ -65,7 +65,9 @@ public final class WildwoodNotificationInboxModel {
         let (list, count) = await (listResult, countResult)
         if let list { notifications = list }
         if let count { unreadCount = count }
-        errorMessage = nil
+        // nil for BOTH is a transient failure that refreshed nothing — surface it (the last-good
+        // values are retained per the service contract). Any success clears the banner.
+        errorMessage = (list == nil && count == nil) ? "Couldn't refresh notifications." : nil
         isLoading = false
     }
 
@@ -74,7 +76,7 @@ public final class WildwoodNotificationInboxModel {
     @discardableResult
     public func markRead(id: String) async -> Bool {
         let ok = await client.notificationInbox.markRead(id: id)
-        if ok { await refresh() }
+        if ok { await refresh() } else { errorMessage = "Couldn't mark the notification as read." }
         return ok
     }
 
@@ -88,7 +90,7 @@ public final class WildwoodNotificationInboxModel {
     @discardableResult
     public func remove(id: String) async -> Bool {
         let ok = await client.notificationInbox.remove(id: id)
-        if ok { await refresh() }
+        if ok { await refresh() } else { errorMessage = "Couldn't delete the notification." }
         return ok
     }
 }

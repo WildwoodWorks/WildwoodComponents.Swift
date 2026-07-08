@@ -102,11 +102,9 @@ public struct NotificationsBell: View {
             isOpen = false
             return
         }
-        if let link = n.link,
-           let url = URL(string: link),
-           let scheme = url.scheme?.lowercased(),
-           scheme == "http" || scheme == "https" {
-            openURL(url)
+        // Reuse the shared http(s)-only guard (NotificationList.swift); close the sheet only when
+        // we actually navigated.
+        if openHTTPLink(n.link, using: openURL) {
             isOpen = false
         }
     }

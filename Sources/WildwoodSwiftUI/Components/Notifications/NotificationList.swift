@@ -175,13 +175,15 @@ private struct NotificationRow: View {
 /// Open a link only when it is an absolute http(s) URL, mirroring the React Native
 /// `/^https?:\/\//i` guard. Relative/other schemes are ignored.
 @MainActor
-func openHTTPLink(_ link: String?, using openURL: OpenURLAction) {
+@discardableResult
+func openHTTPLink(_ link: String?, using openURL: OpenURLAction) -> Bool {
     guard let link,
           let url = URL(string: link),
           let scheme = url.scheme?.lowercased(),
           scheme == "http" || scheme == "https"
-    else { return }
+    else { return false }
     openURL(url)
+    return true
 }
 
 /// Relative "time ago" from an ISO 8601 timestamp, matching the React Native

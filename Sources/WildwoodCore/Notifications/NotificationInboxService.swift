@@ -40,8 +40,15 @@ public final class NotificationInboxService: Sendable {
     /// keep the last known badge count.
     public func getUnreadCount() async -> Int? {
         do {
-            let count: Int = try await http.get("api/notifications/count")
-            return count
+            // Read the raw body and coerce tolerantly (raw number, text/plain number, or empty → 0),
+            // mirroring @wildwood/core's Number() coercion with a 0 fallback, so a 204/empty or an
+            // unexpectedly-wrapped body doesn't throw and leave the badge stale.
+            let data = try await http.getData("api/notifications/count")
+            let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.isEmpty { return 0 }
+            if let n = Int(text) { return n }
+            if let d = Double(text) { return Int(d) }
+            return 0
         } catch let error as WildwoodError {
             return Self.isAuthDeny(error) ? 0 : nil
         } catch {
@@ -52,7 +59,8 @@ public final class NotificationInboxService: Sendable {
     /// Mark a single notification read. Returns whether the request succeeded.
     public func markRead(id: String) async -> Bool {
         do {
-            try await http.putVoid("api/notifications/\(id)/read", body: EmptyBody())
+            let encodedId = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+            try await http.putVoid("api/notifications/\(encodedId)/read", body: EmptyBody())
             return true
         } catch {
             return false
@@ -72,7 +80,8 @@ public final class NotificationInboxService: Sendable {
     /// Delete/dismiss a single notification. Returns whether the request succeeded.
     public func remove(id: String) async -> Bool {
         do {
-            try await http.deleteVoid("api/notifications/\(id)")
+            let encodedId = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+            try await http.deleteVoid("api/notifications/\(encodedId)")
             return true
         } catch {
             return false
@@ -84,7 +93,8 @@ public final class NotificationInboxService: Sendable {
     public func getPreferences(appId: String? = nil) async -> UserNotificationPreference? {
         let targetAppId = appId ?? defaultAppId
         do {
-            let pref: UserNotificationPreference = try await http.get("api/notifications/preferences?appId=\(targetAppId)")
+            let encodedAppId = targetAppId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? targetAppId
+            let pref: UserNotificationPreference = try await http.get("api/notifications/preferences?appId=\(encodedAppId)")
             return pref
         } catch let error as WildwoodError {
             return Self.isAuthDeny(error) ? .createDefault(appId: targetAppId) : nil
