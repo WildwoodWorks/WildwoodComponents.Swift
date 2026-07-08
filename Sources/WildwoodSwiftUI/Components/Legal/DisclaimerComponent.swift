@@ -10,17 +10,32 @@ public struct DisclaimerComponent: View {
 
     private let appId: String?
     private let onAllAccepted: (() -> Void)?
+    /// Fires once after the first load resolves, with the number of pending
+    /// disclaimers found. Lets a gating parent (e.g. the signup flow) advance
+    /// when the fetch comes back empty instead of stranding the user.
+    private let onLoaded: ((Int) -> Void)?
     private let onError: ((String) -> Void)?
 
     @State private var isLoading = true
     @State private var isSubmitting = false
+    // A load that errors with nothing to show: surface the error plus a retry
+    // affordance rather than dead-ending on the "Nothing to accept" state.
+    @State private var loadFailed = false
+    // Guard so onLoaded fires exactly once, on the first successful load.
+    @State private var didNotifyLoaded = false
     @State private var errorMessage: String?
     @State private var disclaimers: [PendingDisclaimerModel] = []
     @State private var accepted: Set<String> = []
 
-    public init(appId: String? = nil, onAllAccepted: (() -> Void)? = nil, onError: ((String) -> Void)? = nil) {
+    public init(
+        appId: String? = nil,
+        onAllAccepted: (() -> Void)? = nil,
+        onLoaded: ((Int) -> Void)? = nil,
+        onError: ((String) -> Void)? = nil
+    ) {
         self.appId = appId
         self.onAllAccepted = onAllAccepted
+        self.onLoaded = onLoaded
         self.onError = onError
     }
 
@@ -28,6 +43,21 @@ public struct DisclaimerComponent: View {
         Group {
             if isLoading {
                 LoadingSpinnerView(label: "Loading disclaimers…")
+            } else if loadFailed {
+                // Recover from a failed load instead of dead-ending: show the
+                // error (when present) alongside a retry button. Critical when
+                // this view gates signup / app access.
+                VStack(alignment: .leading, spacing: 16) {
+                    if let errorMessage {
+                        ErrorBannerView(message: errorMessage) { self.errorMessage = nil }
+                    }
+                    Button {
+                        Task { await load() }
+                    } label: {
+                        Text("Try again").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             } else if disclaimers.isEmpty {
                 ContentUnavailableView(
                     "Nothing to accept",
@@ -82,9 +112,17 @@ public struct DisclaimerComponent: View {
             let response = try await client.disclaimer.getPendingDisclaimers(appId: appId)
             disclaimers = response.disclaimers
             accepted = Set(response.disclaimers.filter { $0.isAccepted == true }.map(\.disclaimerId))
+            loadFailed = false
+            errorMessage = nil
+            // Notify the gating parent exactly once, on the first successful load.
+            if !didNotifyLoaded {
+                didNotifyLoaded = true
+                onLoaded?(response.disclaimers.count)
+            }
         } catch {
             let message = (error as? WildwoodError)?.message ?? error.localizedDescription
             errorMessage = message
+            loadFailed = true
             onError?(message)
         }
     }
