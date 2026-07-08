@@ -38,11 +38,13 @@ public struct NotificationPreferences: View {
                 draft.appId = resolvedAppId
             }
             let created = WildwoodNotificationPreferencesModel(client: client)
-            model = created
             await created.load(appId: resolvedAppId)
             if let loaded = created.preferences {
                 draft = loaded
             }
+            // Assign the model only after the initial load resolves so the loading spinner shows
+            // during the fetch instead of flashing the default (email-on) toggles.
+            model = created
         }
     }
 

@@ -138,9 +138,11 @@ public struct DisclaimerComponent: View {
             let result = try await client.disclaimer.acceptAllDisclaimers(acceptances, appId: appId)
             if result.success {
                 disclaimers.removeAll { accepted.contains($0.disclaimerId) }
-                if disclaimers.isEmpty {
-                    onAllAccepted?()
-                }
+                // The Accept button is enabled once all REQUIRED disclaimers are accepted, so a
+                // successful submit means the user satisfied the gate and chose to continue — fire
+                // onAllAccepted even if unaccepted OPTIONAL disclaimers remain, otherwise a gating
+                // parent (the signup flow) would be stranded because the list is still non-empty.
+                onAllAccepted?()
             } else {
                 let message = result.errorMessage ?? "Failed to record acceptance."
                 errorMessage = message
