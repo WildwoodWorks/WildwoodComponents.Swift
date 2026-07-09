@@ -17,6 +17,9 @@ public final class WildwoodClient {
     @ObservationIgnored public let messaging: MessagingService
     @ObservationIgnored public let payment: PaymentService
     public let notifications: NotificationService
+    /// Backend-connected notification inbox + delivery preferences (distinct from
+    /// `notifications`, the transient in-memory toast queue).
+    @ObservationIgnored public let notificationInbox: NotificationInboxService
     @ObservationIgnored public let twoFactor: TwoFactorService
     @ObservationIgnored public let captcha: CaptchaService
     @ObservationIgnored public let disclaimer: DisclaimerService
@@ -46,6 +49,7 @@ public final class WildwoodClient {
         self.messaging = MessagingService(http: http, storage: storage)
         self.payment = PaymentService(http: http)
         self.notifications = NotificationService()
+        self.notificationInbox = NotificationInboxService(http: http, defaultAppId: config.appId ?? "")
         self.twoFactor = TwoFactorService(http: http)
         self.captcha = CaptchaService()
         self.disclaimer = DisclaimerService(http: http, defaultAppId: config.appId ?? "")

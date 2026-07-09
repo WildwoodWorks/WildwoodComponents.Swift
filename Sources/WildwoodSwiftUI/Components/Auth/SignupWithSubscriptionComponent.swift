@@ -11,7 +11,7 @@ public struct SignupWithSubscriptionComponent: View {
     @Environment(\.wildwoodClient) private var client
 
     public enum Step: Sendable {
-        case accountInfo, tierSelection, processing, done
+        case accountInfo, tierSelection, processing, disclaimers, done
     }
 
     private let appId: String?
@@ -43,6 +43,12 @@ public struct SignupWithSubscriptionComponent: View {
     // Retry guards: a failed subscribe must not re-register or re-charge.
     @State private var establishedAuth: AuthenticationResponse?
     @State private var collectedTransactionId: String?
+    // Login/registration can report disclaimers that must be accepted before the
+    // account is usable. Kept in state so a retry (which reuses the established
+    // session) still routes through the disclaimers step, and so the deferred
+    // onSignupComplete fires with the correct subscribe result.
+    @State private var disclaimersPending = false
+    @State private var completedSubscribeResult: AppTierChangeResultModel?
 
     // Account form
     @State private var firstName = ""
@@ -83,6 +89,7 @@ public struct SignupWithSubscriptionComponent: View {
             case .accountInfo: accountForm
             case .tierSelection: tierSelection
             case .processing: LoadingSpinnerView(label: "Creating your account…")
+            case .disclaimers: disclaimersStep
             case .done:
                 ContentUnavailableView(
                     "Welcome aboard!",
@@ -112,7 +119,8 @@ public struct SignupWithSubscriptionComponent: View {
         switch step {
         case .accountInfo: return "Step 1 of 2"
         case .tierSelection: return "Step 2 of 2"
-        case .processing, .done: return ""
+        // The disclaimers step is a gate, not a numbered step in the indicator.
+        case .processing, .disclaimers, .done: return ""
         }
     }
 
@@ -184,8 +192,42 @@ public struct SignupWithSubscriptionComponent: View {
                     )
                 }
             }
-            Button("Back") { step = .accountInfo }
-                .font(.footnote)
+            Button("Back") {
+                // Start-over path: recompute disclaimer gating on the next
+                // subscribe attempt rather than carrying a stale flag.
+                disclaimersPending = false
+                step = .accountInfo
+            }
+            .font(.footnote)
+        }
+    }
+
+    // Pending legal acceptance surfaced by the login/registration response.
+    // The session JWT is already stored, so DisclaimerComponent's authenticated
+    // accept calls succeed. Gating advances to success only once all are accepted
+    // (or the scoped re-fetch finds none pending).
+    @ViewBuilder private var disclaimersStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("One more step").font(.title3.weight(.semibold))
+            Text("Please review and accept the following before continuing.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            DisclaimerComponent(
+                appId: appId,
+                onAllAccepted: { finishAfterDisclaimers() },
+                onLoaded: { count in
+                    // Nothing pending (e.g. accepted meanwhile) — don't strand
+                    // the user on the disclaimers step.
+                    if count == 0 { finishAfterDisclaimers() }
+                }
+            )
+        }
+    }
+
+    private func finishAfterDisclaimers() {
+        step = .done
+        if let establishedAuth {
+            onSignupComplete?(establishedAuth, completedSubscribeResult)
         }
     }
 
@@ -285,8 +327,20 @@ public struct SignupWithSubscriptionComponent: View {
                 onSignupError?(detail)
             }
 
-            step = .done
-            onSignupComplete?(auth, subscribeResult?.success == true ? subscribeResult : nil)
+            // Gate success on disclaimer acceptance. The login/registration
+            // response carries any pending disclaimers (mirrors the login flow);
+            // the session JWT is stored, so the disclaimer accepts are authorized.
+            let completedResult = subscribeResult?.success == true ? subscribeResult : nil
+            if auth.requiresDisclaimerAcceptance, auth.pendingDisclaimers?.isEmpty == false {
+                disclaimersPending = true
+            }
+            if disclaimersPending {
+                completedSubscribeResult = completedResult
+                step = .disclaimers
+            } else {
+                step = .done
+                onSignupComplete?(auth, completedResult)
+            }
         } catch {
             let message = (error as? WildwoodError)?.message ?? error.localizedDescription
             errorMessage = message
