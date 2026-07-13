@@ -12,6 +12,12 @@
 // stateful lastLimitMessage. `getLatestRun` maps a 404 to nil (no run yet) and
 // rethrows anything else; `delete` reports the boolean outcome.
 //
+// IDIOM NOTE: the sibling DocumentService (added in the same change) instead
+// SOFT-FAILS (list -> [], get/text -> nil) because it mirrors the JS
+// DocumentService, whereas this service throws to match the existing Swift
+// AIFlowService lookups. The asymmetry is intentional — subscription calls need
+// do/catch; document calls return optionals.
+//
 // Auth semantics live in the shared HTTP client: a 401 triggers a single
 // refresh + replay whose refresh flow emits the session-expired signal (once per
 // token), and a 403 (tier lacks FLOW_SUBSCRIPTIONS) is a permission denial that

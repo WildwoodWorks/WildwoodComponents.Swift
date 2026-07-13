@@ -10,6 +10,11 @@
 // to a text-less result and returns nil on other failures, `delete` reports the
 // boolean outcome, and `upload` THROWS (surfacing the server's error detail).
 //
+// IDIOM NOTE: the sibling AIFlowSubscriptionService (added in the same change)
+// instead THROWS on lookups/CRUD (matching the existing Swift AIFlowService), so
+// callers do/catch there but treat these document calls as optionals. Intentional
+// asymmetry, not an oversight.
+//
 // Auth semantics live in the shared HTTP client: a 401 triggers a single
 // refresh + replay whose refresh flow emits the session-expired signal (once per
 // token); a 403 (tier lacks DOCUMENTS) is a permission denial with no session
