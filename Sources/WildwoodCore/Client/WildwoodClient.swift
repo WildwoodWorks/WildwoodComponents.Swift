@@ -14,6 +14,11 @@ public final class WildwoodClient {
     public let session: SessionManager
     @ObservationIgnored public let ai: AIService
     @ObservationIgnored public let aiFlow: AIFlowService
+    /// Per-user scheduled flow-run "standing orders" (list/create/enable/delete +
+    /// latest-run sync). Distinct from `aiFlow`, which streams live runs.
+    @ObservationIgnored public let aiFlowSubscriptions: AIFlowSubscriptionService
+    /// Tenant document store (upload/list/get/text/download/delete).
+    @ObservationIgnored public let documents: DocumentService
     @ObservationIgnored public let messaging: MessagingService
     @ObservationIgnored public let payment: PaymentService
     public let notifications: NotificationService
@@ -46,6 +51,8 @@ public final class WildwoodClient {
         self.session = SessionManager(config: config, authService: auth, storage: storage, events: events, http: http)
         self.ai = AIService(http: http, appId: config.appId)
         self.aiFlow = AIFlowService(http: http, appId: config.appId)
+        self.aiFlowSubscriptions = AIFlowSubscriptionService(http: http, appId: config.appId)
+        self.documents = DocumentService(http: http, appId: config.appId)
         self.messaging = MessagingService(http: http, storage: storage)
         self.payment = PaymentService(http: http)
         self.notifications = NotificationService()

@@ -191,3 +191,189 @@ public struct AIFlowSettings: Sendable {
         self.runLabel = runLabel
     }
 }
+
+// MARK: - Flow subscriptions (scheduled "standing orders")
+// Ported from WildwoodComponents.Shared/Models/AIFlowModels.cs. Date fields on
+// AIFlowSubscription are kept as raw ISO strings (DateTime -> string), matching
+// the .NET wire payload; AIFlowRunDetail keeps AIFlowRunSummary's Date? typing
+// since it mirrors that (inherited) model.
+
+/// Full run detail — includes the input/output JSON, so a client can sync the
+/// result of a background/subscription run it did not stream. Mirrors the .NET
+/// `AIFlowRunDetail : AIFlowRunSummary`; Swift structs can't inherit, so the
+/// summary fields are flattened in.
+public struct AIFlowRunDetail: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var flowId: String
+    public var threadId: String
+    public var triggerType: String
+    public var status: String
+    public var createdAt: Date?
+    public var durationMs: Int?
+    public var totalTokens: Int
+    public var errorMessage: String?
+    public var inputJson: String?
+    public var outputJson: String?
+
+    public init(
+        id: String = "",
+        flowId: String = "",
+        threadId: String = "",
+        triggerType: String = "",
+        status: String = "",
+        createdAt: Date? = nil,
+        durationMs: Int? = nil,
+        totalTokens: Int = 0,
+        errorMessage: String? = nil,
+        inputJson: String? = nil,
+        outputJson: String? = nil
+    ) {
+        self.id = id
+        self.flowId = flowId
+        self.threadId = threadId
+        self.triggerType = triggerType
+        self.status = status
+        self.createdAt = createdAt
+        self.durationMs = durationMs
+        self.totalTokens = totalTokens
+        self.errorMessage = errorMessage
+        self.inputJson = inputJson
+        self.outputJson = outputJson
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        flowId = try c.decodeIfPresent(String.self, forKey: .flowId) ?? ""
+        threadId = try c.decodeIfPresent(String.self, forKey: .threadId) ?? ""
+        triggerType = try c.decodeIfPresent(String.self, forKey: .triggerType) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
+        durationMs = try c.decodeIfPresent(Int.self, forKey: .durationMs)
+        totalTokens = try c.decodeIfPresent(Int.self, forKey: .totalTokens) ?? 0
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+        inputJson = try c.decodeIfPresent(String.self, forKey: .inputJson)
+        outputJson = try c.decodeIfPresent(String.self, forKey: .outputJson)
+    }
+}
+
+/// A user's standing order for a scheduled run of a published flow (the
+/// server's AppLangFlowSubscription): saved inputs + cron schedule +
+/// notify-on-complete. Date fields are raw ISO strings from the wire.
+public struct AIFlowSubscription: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var flowId: String
+    public var flowName: String
+    public var name: String
+    public var inputJson: String?
+    public var scheduleCron: String?
+    public var scheduleTimezone: String?
+    public var nextRunAt: String?
+    public var isEnabled: Bool
+    public var notifyOnComplete: Bool
+    public var lastRunId: String?
+    public var lastRunAt: String?
+    public var lastRunStatus: String?
+    public var createdAt: String
+
+    public init(
+        id: String = "",
+        flowId: String = "",
+        flowName: String = "",
+        name: String = "",
+        inputJson: String? = nil,
+        scheduleCron: String? = nil,
+        scheduleTimezone: String? = nil,
+        nextRunAt: String? = nil,
+        isEnabled: Bool = false,
+        notifyOnComplete: Bool = false,
+        lastRunId: String? = nil,
+        lastRunAt: String? = nil,
+        lastRunStatus: String? = nil,
+        createdAt: String = ""
+    ) {
+        self.id = id
+        self.flowId = flowId
+        self.flowName = flowName
+        self.name = name
+        self.inputJson = inputJson
+        self.scheduleCron = scheduleCron
+        self.scheduleTimezone = scheduleTimezone
+        self.nextRunAt = nextRunAt
+        self.isEnabled = isEnabled
+        self.notifyOnComplete = notifyOnComplete
+        self.lastRunId = lastRunId
+        self.lastRunAt = lastRunAt
+        self.lastRunStatus = lastRunStatus
+        self.createdAt = createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        flowId = try c.decodeIfPresent(String.self, forKey: .flowId) ?? ""
+        flowName = try c.decodeIfPresent(String.self, forKey: .flowName) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        inputJson = try c.decodeIfPresent(String.self, forKey: .inputJson)
+        scheduleCron = try c.decodeIfPresent(String.self, forKey: .scheduleCron)
+        scheduleTimezone = try c.decodeIfPresent(String.self, forKey: .scheduleTimezone)
+        nextRunAt = try c.decodeIfPresent(String.self, forKey: .nextRunAt)
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        notifyOnComplete = try c.decodeIfPresent(Bool.self, forKey: .notifyOnComplete) ?? false
+        lastRunId = try c.decodeIfPresent(String.self, forKey: .lastRunId)
+        lastRunAt = try c.decodeIfPresent(String.self, forKey: .lastRunAt)
+        lastRunStatus = try c.decodeIfPresent(String.self, forKey: .lastRunStatus)
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
+    }
+}
+
+/// Create payload for a new flow subscription. `scheduleCron` is required;
+/// unset optionals are omitted from the JSON so the server applies its defaults.
+public struct AIFlowSubscriptionCreateRequest: Codable, Sendable, Equatable {
+    public var flowId: String
+    public var name: String
+    public var inputJson: String?
+    public var scheduleCron: String
+    public var scheduleTimezone: String?
+    public var notifyOnComplete: Bool
+
+    public init(
+        flowId: String,
+        name: String,
+        scheduleCron: String,
+        inputJson: String? = nil,
+        scheduleTimezone: String? = nil,
+        notifyOnComplete: Bool = true
+    ) {
+        self.flowId = flowId
+        self.name = name
+        self.scheduleCron = scheduleCron
+        self.inputJson = inputJson
+        self.scheduleTimezone = scheduleTimezone
+        self.notifyOnComplete = notifyOnComplete
+    }
+}
+
+/// Partial-update payload — every field is optional; an unset (nil) field is
+/// omitted from the JSON and left unchanged server-side.
+public struct AIFlowSubscriptionUpdateRequest: Codable, Sendable, Equatable {
+    public var name: String?
+    public var inputJson: String?
+    public var scheduleCron: String?
+    public var scheduleTimezone: String?
+    public var notifyOnComplete: Bool?
+
+    public init(
+        name: String? = nil,
+        inputJson: String? = nil,
+        scheduleCron: String? = nil,
+        scheduleTimezone: String? = nil,
+        notifyOnComplete: Bool? = nil
+    ) {
+        self.name = name
+        self.inputJson = inputJson
+        self.scheduleCron = scheduleCron
+        self.scheduleTimezone = scheduleTimezone
+        self.notifyOnComplete = notifyOnComplete
+    }
+}
