@@ -156,13 +156,23 @@ private struct AuthFlowView: View {
                 Button {
                     Task { await signIn(with: provider) }
                 } label: {
-                    Text(provider.displayName)
+                    // buttonText is an operator-configured full label; the bare
+                    // displayName stays the mobile fallback (matches react-native).
+                    Text(providerButtonLabel(for: provider))
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .disabled(model.isLoading)
             }
         }
+    }
+
+    private func providerButtonLabel(for provider: AuthProvider) -> String {
+        if let buttonText = provider.buttonText,
+           !buttonText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return buttonText
+        }
+        return provider.displayName
     }
 
     private func signIn(with provider: AuthProvider) async {

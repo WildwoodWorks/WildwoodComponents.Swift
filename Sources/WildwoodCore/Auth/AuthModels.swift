@@ -282,19 +282,24 @@ public struct TwoFactorSendCodeResponse: Codable, Sendable, Equatable {
 
 public struct AuthProvider: Codable, Sendable, Equatable, Identifiable {
     public var name: String
+    /// The provider's name as shown to users (e.g. "Microsoft"). Not a full button label.
     public var displayName: String
     public var icon: String
     public var isEnabled: Bool
+    /// Optional full button label override (e.g. "Sign in with Google"). When empty,
+    /// components render their own label from ``displayName``.
+    public var buttonText: String?
     public var clientId: String?
     public var redirectUri: String?
 
     public var id: String { name }
 
-    public init(name: String, displayName: String, icon: String = "", isEnabled: Bool = true, clientId: String? = nil, redirectUri: String? = nil) {
+    public init(name: String, displayName: String, icon: String = "", isEnabled: Bool = true, buttonText: String? = nil, clientId: String? = nil, redirectUri: String? = nil) {
         self.name = name
         self.displayName = displayName
         self.icon = icon
         self.isEnabled = isEnabled
+        self.buttonText = buttonText
         self.clientId = clientId
         self.redirectUri = redirectUri
     }
