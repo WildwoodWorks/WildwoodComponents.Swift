@@ -61,6 +61,24 @@ struct AuthServiceTests {
         #expect(body.contains("\"CaptchaResponse\":\"captcha-tok\""))
     }
 
+    @Test func getAvailableProvidersCarriesButtonTextAndFiltersDisabled() async throws {
+        let (service, _, backend) = makeService()
+        backend.stub("GET", "/api/AppComponentConfigurations/app-1/auth-providers", .init(json: """
+        {"authProviders":[
+          {"id":"p1","providerName":"Google","displayName":"Google","icon":"g","isEnabled":true,
+           "buttonText":"Continue with Google"},
+          {"id":"p2","providerName":"Facebook","displayName":"Facebook","icon":"f","isEnabled":false,
+           "buttonText":"Sign in with Facebook"}
+        ]}
+        """))
+
+        let providers = await service.getAvailableProviders(appId: "app-1")
+
+        #expect(providers.count == 1)
+        #expect(providers.first?.name == "Google")
+        #expect(providers.first?.buttonText == "Continue with Google")
+    }
+
     @Test func refreshTokenClearsStorageOn401() async throws {
         let storage = MemoryStorage()
         storage.setItem(WildwoodStorageKeys.refreshToken, "stale")

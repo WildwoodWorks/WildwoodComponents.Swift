@@ -228,6 +228,7 @@ public final class AuthService: Sendable {
                             displayName: p.displayName,
                             icon: p.icon ?? "",
                             isEnabled: p.isEnabled,
+                            buttonText: p.buttonText,
                             clientId: p.clientId,
                             redirectUri: p.redirectUri
                         )
