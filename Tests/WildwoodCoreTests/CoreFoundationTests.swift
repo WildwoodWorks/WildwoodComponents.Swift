@@ -1,5 +1,5 @@
 // JWT decoding, date parsing, storage keys, error mapping, and the HTTP
-// client's reactive 401 retry.
+// client's reactive 401 retry + replay safety.
 
 import Foundation
 import Testing
@@ -153,6 +153,159 @@ struct HttpClientTests {
             Issue.record("Expected a 404 error")
         } catch let error as WildwoodError {
             #expect(error.status == 404)
+        } catch {
+            Issue.record("Unexpected error type")
+        }
+        #expect(backend.requests().count == 1)
+    }
+
+    // MARK: Replay safety
+    //
+    // Parity with @wildwood/core: a 5xx or network failure says nothing about whether
+    // the server already applied the request, so only idempotent methods may be
+    // replayed. Timeouts and cancellations are never replayed, for any method.
+
+    @Test func postIsStillReplayedAfterA401Refresh() async throws {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+
+        backend.stub("POST", "/api/submit", .init(statusCode: 401, json: #"{"message":"expired"}"#))
+        await http.setTokenProvider { "token" }
+        await http.setOn401Refresh {
+            backend.stub("POST", "/api/submit", .init(json: #"{"ok":true}"#))
+            return true
+        }
+
+        // A 401 is refused by auth middleware before the handler runs, so the request
+        // provably had no effect — replaying it is safe even though POST is not
+        // idempotent. This guards the ordering of the guards in request().
+        struct OkResponse: Decodable { var ok: Bool }
+        let result: OkResponse = try await http.post("api/submit", body: EmptyBody())
+        #expect(result.ok)
+        #expect(backend.requests().count == 2)
+    }
+
+    @Test func serverErrorsAreRetriedForIdempotentMethods() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 2)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stub("GET", "/api/flaky", .init(statusCode: 503, json: #"{"message":"down"}"#))
+
+        let _: EmptyBody? = try? await http.get("api/flaky", skipAuth: true)
+
+        #expect(backend.requests().count == 2)
+    }
+
+    @Test func serverErrorsAreRetriedForPutAndDelete() async {
+        let putBackend = MockBackend()
+        let putConfig = WildwoodConfig(baseUrl: putBackend.baseUrl, enableRetry: true, maxRetryAttempts: 2)
+        let putHttp = WildwoodHttpClient(config: putConfig, urlSession: putBackend.makeSession())
+        putBackend.stub("PUT", "/api/thing", .init(statusCode: 500, json: #"{"message":"boom"}"#))
+
+        _ = try? await putHttp.putVoid("api/thing", body: EmptyBody(), skipAuth: true)
+        #expect(putBackend.requests().count == 2)
+
+        let deleteBackend = MockBackend()
+        let deleteConfig = WildwoodConfig(baseUrl: deleteBackend.baseUrl, enableRetry: true, maxRetryAttempts: 2)
+        let deleteHttp = WildwoodHttpClient(config: deleteConfig, urlSession: deleteBackend.makeSession())
+        deleteBackend.stub("DELETE", "/api/thing", .init(statusCode: 500, json: #"{"message":"boom"}"#))
+
+        _ = try? await deleteHttp.deleteVoid("api/thing", skipAuth: true)
+        #expect(deleteBackend.requests().count == 2)
+    }
+
+    @Test func serverErrorsAreNotReplayedForPost() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stub("POST", "/api/feedback", .init(statusCode: 500, json: #"{"message":"boom"}"#))
+
+        do {
+            try await http.postVoid("api/feedback", body: EmptyBody(), skipAuth: true)
+            Issue.record("Expected a 500 error")
+        } catch let error as WildwoodError {
+            #expect(error.status == 500)
+        } catch {
+            Issue.record("Unexpected error type")
+        }
+
+        // The submit must be delivered exactly once — replaying it would file the
+        // feedback again, because the row commits before the response is produced.
+        #expect(backend.requests().count == 1)
+    }
+
+    @Test func serverErrorsAreNotReplayedForPatch() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stub("PATCH", "/api/thing", .init(statusCode: 500, json: #"{"message":"boom"}"#))
+
+        let _: EmptyBody? = try? await http.patch("api/thing", body: EmptyBody(), skipAuth: true)
+
+        #expect(backend.requests().count == 1)
+    }
+
+    @Test func networkErrorsAreNotReplayedForPost() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stubError("POST", "/api/feedback", .cannotConnectToHost)
+
+        do {
+            try await http.postVoid("api/feedback", body: EmptyBody(), skipAuth: true)
+            Issue.record("Expected a network error")
+        } catch let error as WildwoodError {
+            #expect(error.code == .networkError)
+        } catch {
+            Issue.record("Unexpected error type")
+        }
+        #expect(backend.requests().count == 1)
+    }
+
+    @Test func networkErrorsAreRetriedForGet() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 2)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stubError("GET", "/api/flaky", .cannotConnectToHost)
+
+        let _: EmptyBody? = try? await http.get("api/flaky", skipAuth: true)
+
+        #expect(backend.requests().count == 2)
+    }
+
+    @Test func timeoutsAreNeverRetried() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stubError("GET", "/api/slow", .timedOut)
+
+        do {
+            let _: EmptyBody = try await http.get("api/slow", skipAuth: true)
+            Issue.record("Expected a timeout error")
+        } catch let error as WildwoodError {
+            #expect(error.code == .timeout)
+        } catch {
+            Issue.record("Unexpected error type")
+        }
+
+        // A timeout says nothing about whether the server processed the request,
+        // so it is not replayed even though GET is idempotent.
+        #expect(backend.requests().count == 1)
+    }
+
+    @Test func cancellationIsNeverRetried() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        backend.stubError("GET", "/api/thing", .cancelled)
+
+        do {
+            let _: EmptyBody = try await http.get("api/thing", skipAuth: true)
+            Issue.record("Expected a cancellation")
+        } catch is CancellationError {
+            // Expected: Swift surfaces caller cancellation as CancellationError rather
+            // than JS's typed 'Cancelled' code — same behaviour, each stack's idiom.
         } catch {
             Issue.record("Unexpected error type")
         }

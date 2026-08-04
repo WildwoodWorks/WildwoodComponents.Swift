@@ -2,10 +2,23 @@
 // retry with exponential backoff on 5xx/network errors, request timeout, and
 // reactive 401 handling (refresh token once, then replay the request).
 //
+// Retry is limited to idempotent methods (GET/HEAD/OPTIONS/PUT/DELETE) and never
+// covers timeouts or cancellation — see the guards in `request()` for why.
+//
 // PARITY: services must pass endpoint paths as double-quoted string literals
 // to these verb methods — the Sync parity script extracts them by regex.
 
 import Foundation
+
+/// HTTP methods that may be replayed without changing the outcome (RFC 9110 §9.2.2).
+///
+/// PUT and DELETE qualify: both describe an end state, so applying them twice lands where
+/// applying them once did. POST and PATCH do not — each is a fresh instruction to the server.
+private let idempotentMethods: Set<String> = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]
+
+private func isIdempotent(_ method: String) -> Bool {
+    idempotentMethods.contains(method.uppercased())
+}
 
 public actor WildwoodHttpClient {
     private let config: WildwoodConfig
@@ -257,14 +270,37 @@ public actor WildwoodHttpClient {
                 lastError = error
 
                 // Reactive 401 handling: refresh token and retry once.
+                // Safe for every method, unlike the retries below: a 401 is refused by auth
+                // middleware before the handler runs, so the request provably had no effect.
                 if await shouldRetryAfter401(status: error.status, skipAuth: skipAuth, attempt: attempt) {
                     continue
+                }
+
+                // Never retried, for any method. A timeout says nothing about whether the server
+                // processed the request — only that we stopped waiting for the answer. (Caller
+                // cancellation is handled by never reaching here: mapTransportError returns a
+                // CancellationError, which this catch clause does not match.)
+                if error.code == .timeout {
+                    throw error
                 }
 
                 // Only retry on 5xx or network errors, not 4xx.
                 if error.status > 0, error.status < 500 {
                     throw error
                 }
+
+                // ...and only for methods that are safe to replay. Neither a network error nor a
+                // 5xx tells us whether the server already applied the request, so replaying a POST
+                // can duplicate the effect. That is not hypothetical: with the default timeout and
+                // 3 attempts, one slow feedback submit filed the feedback three times, because the
+                // row commits server-side before the response is produced.
+                //
+                // Callers who know a specific POST is safe to replay can retry it themselves; the
+                // client cannot know that on their behalf.
+                if !isIdempotent(method) {
+                    throw error
+                }
+
                 if attempt < maxAttempts - 1 {
                     // Propagates CancellationError, aborting the retry loop.
                     let backoff = min(1.0 * pow(2.0, Double(attempt)), 10.0)
