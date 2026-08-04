@@ -15,7 +15,11 @@ public struct WildwoodConfig: Sendable {
     public var enableDetailedErrors: Bool
     /// HTTP request timeout in seconds (default 30).
     public var requestTimeoutSeconds: TimeInterval
-    /// Enable automatic retry on 5xx/network failure (default true).
+    /// Enable automatic retry on 5xx/network failure (default true). Applies only to
+    /// idempotent methods (GET/HEAD/OPTIONS/PUT/DELETE); POST and PATCH are never
+    /// replayed, and timeouts are never retried. Independent of the reactive 401
+    /// refresh, which replays any method once — a 401 is refused before the handler
+    /// runs, so the request provably had no effect.
     public var enableRetry: Bool
     /// Maximum attempts including the first (default 3).
     public var maxRetryAttempts: Int

@@ -44,6 +44,13 @@ final class MockBackend: Sendable {
         MockURLProtocol.handlers.withLock { $0["\(method) \(host) \(path)"] = response }
     }
 
+    /// Stub a transport-level failure (timeout, connection refused, cancellation)
+    /// rather than an HTTP response — the path `WildwoodHttpClient` funnels through
+    /// `mapTransportError`. Takes precedence over a `stub` for the same route.
+    func stubError(_ method: String, _ path: String, _ code: URLError.Code) {
+        MockURLProtocol.errors.withLock { $0["\(method) \(host) \(path)"] = code }
+    }
+
     func requests() -> [RecordedRequest] {
         MockURLProtocol.recorded.withLock { $0.filter { $0.host == host } }
     }
@@ -57,6 +64,7 @@ final class MockBackend: Sendable {
 
 final class MockURLProtocol: URLProtocol {
     static let handlers = Mutex<[String: StubResponse]>([:])
+    static let errors = Mutex<[String: URLError.Code]>([:])
     static let recorded = Mutex<[RecordedRequest]>([])
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -89,6 +97,11 @@ final class MockURLProtocol: URLProtocol {
         }
         Self.recorded.withLock {
             $0.append(RecordedRequest(method: method, host: host, path: path, headers: headers, body: bodyData))
+        }
+
+        if let code = Self.errors.withLock({ $0["\(method) \(host) \(path)"] }) {
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+            return
         }
 
         let stub = Self.handlers.withLock { $0["\(method) \(host) \(path)"] }

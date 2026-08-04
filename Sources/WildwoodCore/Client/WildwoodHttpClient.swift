@@ -2,10 +2,23 @@
 // retry with exponential backoff on 5xx/network errors, request timeout, and
 // reactive 401 handling (refresh token once, then replay the request).
 //
+// Retry is limited to idempotent methods (GET/HEAD/OPTIONS/PUT/DELETE) and never
+// covers timeouts or cancellation — see the guards in `request()` for why.
+//
 // PARITY: services must pass endpoint paths as double-quoted string literals
 // to these verb methods — the Sync parity script extracts them by regex.
 
 import Foundation
+
+/// HTTP methods that may be replayed without changing the outcome (RFC 9110 §9.2.2).
+///
+/// PUT and DELETE qualify: both describe an end state, so applying them twice lands where
+/// applying them once did. POST and PATCH do not — each is a fresh instruction to the server.
+private let idempotentMethods: Set<String> = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]
+
+private func isIdempotent(_ method: String) -> Bool {
+    idempotentMethods.contains(method.uppercased())
+}
 
 public actor WildwoodHttpClient {
     private let config: WildwoodConfig
@@ -130,7 +143,8 @@ public actor WildwoodHttpClient {
             }
 
             // Reactive 401 handling: refresh token and replay once, mirroring request().
-            if await shouldRetryAfter401(status: http.statusCode, skipAuth: skipAuth, attempt: attempt) {
+            if attempt == 0,
+               await shouldRefreshAndReplayAfter401(status: http.statusCode, skipAuth: skipAuth) {
                 continue
             }
 
@@ -242,8 +256,10 @@ public actor WildwoodHttpClient {
         let maxAttempts = config.enableRetry ? max(1, config.maxRetryAttempts) : 1
 
         var lastError = WildwoodError(message: "Request failed", status: 0, code: .networkError)
+        var attemptsUsed = 0
+        var refreshReplayUsed = false
 
-        for attempt in 0..<maxAttempts {
+        while true {
             do {
                 return try await executeRequest(
                     method: method,
@@ -256,20 +272,55 @@ public actor WildwoodHttpClient {
             } catch let error as WildwoodError {
                 lastError = error
 
-                // Reactive 401 handling: refresh token and retry once.
-                if await shouldRetryAfter401(status: error.status, skipAuth: skipAuth, attempt: attempt) {
+                // Reactive 401 handling: refresh token and replay once.
+                // Safe for every method, unlike the retries below: a 401 is refused by auth
+                // middleware before the handler runs, so the request provably had no effect.
+                //
+                // Deliberately outside the retry budget below. Recovering an expired session is
+                // not a retry, and counting it as one meant `enableRetry: false` — or any
+                // maxRetryAttempts of 1 — spent the refresh and then threw the original 401
+                // without ever replaying, leaving the caller signed out with a fresh token in
+                // hand. The `refreshReplayUsed` flag, not the attempt index, is what keeps this
+                // to a single refresh per request.
+                if !refreshReplayUsed,
+                   await shouldRefreshAndReplayAfter401(status: error.status, skipAuth: skipAuth) {
+                    refreshReplayUsed = true
                     continue
+                }
+
+                // Never retried, for any method. A timeout says nothing about whether the server
+                // processed the request — only that we stopped waiting for the answer. (Caller
+                // cancellation is handled by never reaching here: mapTransportError returns a
+                // CancellationError, which this catch clause does not match.)
+                if error.code == .timeout {
+                    throw error
                 }
 
                 // Only retry on 5xx or network errors, not 4xx.
                 if error.status > 0, error.status < 500 {
                     throw error
                 }
-                if attempt < maxAttempts - 1 {
-                    // Propagates CancellationError, aborting the retry loop.
-                    let backoff = min(1.0 * pow(2.0, Double(attempt)), 10.0)
-                    try await Task.sleep(for: .seconds(backoff))
+
+                // ...and only for methods that are safe to replay. Neither a network error nor a
+                // 5xx tells us whether the server already applied the request, so replaying a POST
+                // can duplicate the effect. That is not hypothetical: with the default timeout and
+                // 3 attempts, one slow feedback submit filed the feedback three times, because the
+                // row commits server-side before the response is produced.
+                //
+                // Callers who know a specific POST is safe to replay can retry it themselves; the
+                // client cannot know that on their behalf.
+                if !isIdempotent(method) {
+                    throw error
                 }
+
+                attemptsUsed += 1
+                if attemptsUsed >= maxAttempts {
+                    break
+                }
+
+                // Propagates CancellationError, aborting the retry loop.
+                let backoff = min(1.0 * pow(2.0, Double(attemptsUsed - 1)), 10.0)
+                try await Task.sleep(for: .seconds(backoff))
             }
             // Non-WildwoodError errors (e.g. CancellationError) propagate immediately.
         }
@@ -348,11 +399,14 @@ public actor WildwoodHttpClient {
         return urlRequest
     }
 
-    /// Single reactive refresh + replay, shared by request() and the SSE
-    /// post: true only for a first-attempt 401 on an authenticated call whose
-    /// token refresh succeeded — the caller then replays the request once.
-    private func shouldRetryAfter401(status: Int, skipAuth: Bool, attempt: Int) async -> Bool {
-        guard status == 401, !skipAuth, attempt == 0, let on401Refresh else { return false }
+    /// Reactive refresh, shared by request() and the SSE post: true only for a 401 on an
+    /// authenticated call whose token refresh succeeded — the caller then replays the request.
+    ///
+    /// Each caller enforces "at most one refresh per request" itself, because they track it
+    /// differently: request() uses a flag (its replay must not consume a retry attempt), while
+    /// the SSE post has a fixed two-iteration loop and keys off the attempt index.
+    private func shouldRefreshAndReplayAfter401(status: Int, skipAuth: Bool) async -> Bool {
+        guard status == 401, !skipAuth, let on401Refresh else { return false }
         return await on401Refresh()
     }
 
