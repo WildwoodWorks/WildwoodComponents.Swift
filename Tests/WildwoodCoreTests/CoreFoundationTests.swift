@@ -2,6 +2,7 @@
 // client's reactive 401 retry + replay safety.
 
 import Foundation
+import Synchronization
 import Testing
 @testable import WildwoodCore
 
@@ -164,6 +165,66 @@ struct HttpClientTests {
     // Parity with @wildwood/core: a 5xx or network failure says nothing about whether
     // the server already applied the request, so only idempotent methods may be
     // replayed. Timeouts and cancellations are never replayed, for any method.
+
+    @Test func refreshesAndReplaysOn401_evenWhenRetryIsDisabled() async throws {
+        let backend = MockBackend()
+        // enableRetry: false collapses the retry budget to a single attempt. Session recovery
+        // must still work — it is not a retry.
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+
+        backend.stub("GET", "/api/secure", .init(statusCode: 401, json: #"{"message":"expired"}"#))
+        await http.setTokenProvider { "token" }
+        await http.setOn401Refresh {
+            backend.stub("GET", "/api/secure", .init(json: #"{"ok":true}"#))
+            return true
+        }
+
+        struct OkResponse: Decodable { var ok: Bool }
+        let result: OkResponse = try await http.get("api/secure")
+
+        #expect(result.ok)
+        #expect(backend.requests().count == 2)
+    }
+
+    @Test func refreshIsAttemptedOnlyOncePerRequest() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 3)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+
+        // The refresh "succeeds" but the server keeps 401ing — the replay must not loop.
+        let refreshCount = Mutex(0)
+        backend.stub("GET", "/api/secure", .init(statusCode: 401, json: #"{"message":"expired"}"#))
+        await http.setTokenProvider { "token" }
+        await http.setOn401Refresh {
+            refreshCount.withLock { $0 += 1 }
+            return true
+        }
+
+        let _: EmptyBody? = try? await http.get("api/secure")
+
+        #expect(refreshCount.withLock { $0 } == 1)
+        #expect(backend.requests().count == 2)
+    }
+
+    @Test func the401ReplayDoesNotConsumeTheRetryBudget() async {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 2)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+
+        backend.stub("GET", "/api/secure", .init(statusCode: 401, json: #"{"message":"expired"}"#))
+        await http.setTokenProvider { "token" }
+        await http.setOn401Refresh {
+            backend.stub("GET", "/api/secure", .init(statusCode: 503, json: #"{"message":"down"}"#))
+            return true
+        }
+
+        let _: EmptyBody? = try? await http.get("api/secure")
+
+        // 1 (401) + 2 full retry attempts against the 503. If the replay were charged to the
+        // budget this would stop at 2.
+        #expect(backend.requests().count == 3)
+    }
 
     @Test func postIsStillReplayedAfterA401Refresh() async throws {
         let backend = MockBackend()
