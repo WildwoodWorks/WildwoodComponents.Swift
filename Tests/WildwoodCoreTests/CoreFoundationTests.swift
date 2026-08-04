@@ -186,7 +186,7 @@ struct HttpClientTests {
         #expect(backend.requests().count == 2)
     }
 
-    @Test func serverErrorsAreRetriedForIdempotentMethods() async {
+    @Test func serverErrorsAreRetriedForGet() async {
         let backend = MockBackend()
         let config = WildwoodConfig(baseUrl: backend.baseUrl, enableRetry: true, maxRetryAttempts: 2)
         let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
