@@ -2,9 +2,17 @@
 // Feedback widget: typed submissions with duplicate detection and voting —
 // parity with FeedbackComponent. Screenshots are passed in by the host app
 // (e.g. captured with ImageRenderer) or attached from the photo library.
+//
+// There is no in-SDK screen capture here, and so no counterpart to the web SDKs'
+// html2canvas plumbing: on iOS there is no Content-Security-Policy to work around, no
+// third-party script to load, and no screen-share permission prompt to avoid. What DOES
+// cross over from that work is the part about honesty — an attachment that cannot be read
+// says so instead of doing nothing, and the bytes are encoded as the media type the data
+// URL claims, at the size the app's widget configuration asks for.
 
 import SwiftUI
 import PhotosUI
+import UIKit
 import WildwoodCore
 
 public struct FeedbackComponent: View {
@@ -122,11 +130,40 @@ public struct FeedbackComponent: View {
                         .font(.caption)
                 }
                 .onChange(of: photoItem) {
+                    // Clearing the selection below re-enters here with nil; that is not a pick.
+                    // A cancelled picker never changes the selection at all, so it never
+                    // reaches this point — a cancel stays silent, as it should.
+                    guard let item = photoItem else { return }
+                    let qualityPct = config?.screenshotQuality ?? 80
+                    let maxSizeKb = config?.screenshotMaxSizeKb ?? 0
                     Task {
-                        if let item = photoItem, let data = try? await item.loadTransferable(type: Data.self) {
-                            attachedScreenshot = "data:image/jpeg;base64,\(data.base64EncodedString())"
+                        defer { photoItem = nil }
+                        do {
+                            guard let data = try await item.loadTransferable(type: Data.self) else {
+                                // The picker handed back an item it could not then produce bytes
+                                // for — an iCloud photo that never downloaded is the usual cause.
+                                errorMessage = "That image couldn't be read. It may still be "
+                                    + "downloading from iCloud — try again, or pick another."
+                                return
+                            }
+                            // Off the main actor: re-encoding a full-resolution photo is real
+                            // work, and the form must stay responsive while it happens.
+                            let encoded = await Task.detached(priority: .userInitiated) {
+                                FeedbackScreenshotEncoder.jpegDataURL(
+                                    from: data, qualityPct: qualityPct, maxSizeKb: maxSizeKb)
+                            }.value
+                            guard let encoded else {
+                                errorMessage = "That file isn't an image this app can attach."
+                                return
+                            }
+                            attachedScreenshot = encoded
+                            errorMessage = ""
+                        } catch {
+                            // Swallowing this is what the old code did, and it left the button
+                            // reading "Attach screenshot" with no hint that anything had gone
+                            // wrong — indistinguishable from never having tapped it.
+                            errorMessage = (error as? WildwoodError)?.message ?? error.localizedDescription
                         }
-                        photoItem = nil
                     }
                 }
                 if attachedScreenshot != nil {
@@ -229,6 +266,53 @@ public struct FeedbackComponent: View {
         if feedbackType.isEmpty {
             feedbackType = config?.feedbackTypes.first ?? ""
         }
+    }
+}
+
+/// Turn picked image bytes into a size-bounded JPEG data URL.
+///
+/// Mirrors the web SDKs' `compressScreenshot`, and exists for the same two reasons. The
+/// widget's `screenshotMaxSizeKb` and `screenshotQuality` are configured per app and every
+/// other stack honours them — attaching an untouched 12-megapixel original ignores both, and
+/// the server is entitled to refuse it. And a photo library holds HEIC and PNG as readily as
+/// JPEG, so base64-ing the original bytes under a `data:image/jpeg` prefix, as this component
+/// used to, states a media type that is simply not true of what follows it.
+enum FeedbackScreenshotEncoder {
+    /// `maxSizeKb <= 0` means unbounded, matching the web implementation and the server
+    /// default of 0.
+    static func jpegDataURL(from data: Data, qualityPct: Int, maxSizeKb: Int) -> String? {
+        guard let image = UIImage(data: data) else { return nil }
+        let quality = CGFloat(min(max(Double(qualityPct) / 100.0, 0.1), 1.0))
+        guard var jpeg = image.jpegData(compressionQuality: quality) else { return nil }
+
+        if maxSizeKb > 0 {
+            let maxBytes = maxSizeKb * 1024
+            // Step the quality down first: it costs nothing but fidelity, where scaling costs
+            // pixels the reporter may have been pointing at.
+            var current = quality
+            while jpeg.count > maxBytes, current > 0.1 {
+                current -= 0.1
+                guard let smaller = image.jpegData(compressionQuality: current) else { break }
+                jpeg = smaller
+            }
+            // Still over at the lowest useful quality: scale by the square root of the overage,
+            // which is the linear factor that brings the pixel COUNT down by it.
+            if jpeg.count > maxBytes {
+                let scale = CGFloat((Double(maxBytes) / Double(jpeg.count)).squareRoot())
+                let size = CGSize(width: (image.size.width * scale).rounded(),
+                                  height: (image.size.height * scale).rounded())
+                // `preparingThumbnail(of:)` rather than a graphics context: Apple documents it
+                // as the resize to run off the main thread, which is where this whole function
+                // is called from.
+                if size.width >= 1, size.height >= 1,
+                   let scaled = image.preparingThumbnail(of: size),
+                   let scaledData = scaled.jpegData(compressionQuality: 0.7) {
+                    jpeg = scaledData
+                }
+            }
+        }
+
+        return "data:image/jpeg;base64,\(jpeg.base64EncodedString())"
     }
 }
 #endif
