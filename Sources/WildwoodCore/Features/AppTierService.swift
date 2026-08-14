@@ -51,6 +51,19 @@ public final class AppTierService: Sendable {
         return data ?? []
     }
 
+    /// The app's Active add-ons with their pricing options, via the public endpoint
+    /// (works unauthenticated) — the add-on twin of getPublicTiers(), so a public
+    /// pricing page can list the packs an app sells alongside its tiers.
+    ///
+    /// THROWS on failure, unlike the add-on getters above, which swallow and return [].
+    /// That is deliberate and matches the JS core service: a public page has to be able
+    /// to tell "this app sells no packs" from "the catalog failed to load", and an
+    /// empty array cannot express the second.
+    public func getPublicAddOns(appId: String) async throws -> [AppTierAddOnModel] {
+        let data: [AppTierAddOnModel]? = try await http.get("api/app-tier-addons/\(appId)/public", skipAuth: true)
+        return data ?? []
+    }
+
     // MARK: - User subscription
 
     /// The user's active subscription, or nil ONLY when none exists
