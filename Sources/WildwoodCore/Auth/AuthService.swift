@@ -321,6 +321,17 @@ public final class AuthService: Sendable {
         return true
     }
 
+    /// Sets a new password.
+    ///
+    /// `POST api/auth/reset-password` is `[Authorize]` on the server and identifies the user
+    /// solely from the JWT — the request body carries no email or user id. The forced-reset
+    /// flow (login with a temporary password) already has a real token: `login` short-circuits
+    /// only for `requiresTwoFactor`, so a `requiresPasswordReset` response still reaches
+    /// `storeAuthentication`. That token MUST be sent or the reset fails with 401 and the user
+    /// is stranded on the reset screen.
+    ///
+    /// `resetToken` is reserved for a future emailed-link flow, which is the only case that is
+    /// legitimately anonymous — hence `skipAuth` follows it rather than being hardcoded.
     @discardableResult
     public func resetPassword(newPassword: String, confirmPassword: String, appId: String, resetToken: String? = nil) async throws -> Bool {
         struct ResetPasswordDto: Encodable {
@@ -332,7 +343,7 @@ public final class AuthService: Sendable {
         try await http.postVoid(
             "api/auth/reset-password",
             body: ResetPasswordDto(ResetToken: resetToken, NewPassword: newPassword, ConfirmPassword: confirmPassword, AppId: appId),
-            skipAuth: true
+            skipAuth: resetToken != nil
         )
         return true
     }
@@ -386,13 +397,21 @@ public final class AuthService: Sendable {
         guard let refreshToken = storage.getItem(WildwoodStorageKeys.refreshToken) else { return false }
 
         do {
-            let data: AuthenticationResponse = try await http.post(
+            var data: AuthenticationResponse = try await http.post(
                 "api/auth/refresh-token",
                 body: RefreshTokenDto(RefreshToken: refreshToken),
                 skipAuth: true
             )
 
             if !data.jwtToken.isEmpty {
+                // The refresh-token endpoint does not carry requiresPasswordReset, so it always
+                // comes back false. Storing that would clear a pending forced reset — a user who
+                // refreshes before resetting would silently stop being asked. Carry the prior
+                // value forward; the next real login returns the authoritative one.
+                if getStoredUser()?.requiresPasswordReset == true {
+                    data.requiresPasswordReset = true
+                }
+
                 storeAuthentication(data)
                 notifyAuthChanged(data)
                 await events.emit(.tokenRefreshed(data.jwtToken))
