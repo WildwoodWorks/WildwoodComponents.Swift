@@ -147,6 +147,75 @@ struct AuthServiceTests {
         #expect(stored?.roles == ["Admin"])
     }
 
+    // The reported bug: reset-password was sent with skipAuth: true, but the server is
+    // [Authorize] and identifies the user from the JWT alone, so it 401'd and every
+    // temporary-password account was stranded on the reset screen.
+    @Test func resetPasswordSendsTheSessionBearerToken() async throws {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        await http.setTokenProvider { "jwt-123" }
+        let service = AuthService(http: http, storage: MemoryStorage(), events: WildwoodEventEmitter())
+        backend.stub("POST", "/api/auth/reset-password", .init(json: #"{"message":"Password reset successful"}"#))
+
+        _ = try await service.resetPassword(newPassword: "NewPass1!", confirmPassword: "NewPass1!", appId: "app-1")
+
+        let request = backend.requests().first
+        #expect(request?.headers["Authorization"] == "Bearer jwt-123")
+        let body = String(data: request?.body ?? Data(), encoding: .utf8) ?? ""
+        #expect(!body.contains("ResetToken"))
+    }
+
+    // An emailed-link reset is the one case that is legitimately anonymous.
+    @Test func resetPasswordStaysAnonymousWithAResetToken() async throws {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        await http.setTokenProvider { "jwt-123" }
+        let service = AuthService(http: http, storage: MemoryStorage(), events: WildwoodEventEmitter())
+        backend.stub("POST", "/api/auth/reset-password", .init(json: #"{"message":"Password reset successful"}"#))
+
+        _ = try await service.resetPassword(
+            newPassword: "NewPass1!", confirmPassword: "NewPass1!", appId: "app-1", resetToken: "link-token"
+        )
+
+        let request = backend.requests().first
+        #expect(request?.headers["Authorization"] == nil)
+        let body = String(data: request?.body ?? Data(), encoding: .utf8) ?? ""
+        #expect(body.contains("\"ResetToken\":\"link-token\""))
+    }
+
+    // The refresh-token endpoint never sets requiresPasswordReset, so storing its response
+    // verbatim would silently clear a pending forced reset.
+    @Test func refreshTokenPreservesAPendingPasswordReset() async throws {
+        let storage = MemoryStorage()
+        storage.setItem(WildwoodStorageKeys.refreshToken, "refresh-1")
+        storage.setItem(WildwoodStorageKeys.user, #"{"userId":"u1","requiresPasswordReset":true}"#)
+        let (service, _, backend) = makeService(storage: storage)
+        backend.stub("POST", "/api/auth/refresh-token", .init(json: """
+        {"userId":"u1","jwtToken":"new-jwt","refreshToken":"new-refresh","requiresPasswordReset":false}
+        """))
+
+        let refreshed = await service.refreshToken()
+
+        #expect(refreshed)
+        #expect(service.getStoredUser()?.requiresPasswordReset == true)
+    }
+
+    @Test func refreshTokenDoesNotInventAPendingPasswordReset() async throws {
+        let storage = MemoryStorage()
+        storage.setItem(WildwoodStorageKeys.refreshToken, "refresh-1")
+        storage.setItem(WildwoodStorageKeys.user, #"{"userId":"u1","requiresPasswordReset":false}"#)
+        let (service, _, backend) = makeService(storage: storage)
+        backend.stub("POST", "/api/auth/refresh-token", .init(json: """
+        {"userId":"u1","jwtToken":"new-jwt","refreshToken":"new-refresh","requiresPasswordReset":false}
+        """))
+
+        _ = await service.refreshToken()
+
+        #expect(service.getStoredUser()?.requiresPasswordReset == false)
+    }
+
     @Test func passwordRulesEnforceConfiguredRequirements() throws {
         let json = """
         {"isEnabled":true,"allowLocalAuth":true,"passwordMinimumLength":8,
