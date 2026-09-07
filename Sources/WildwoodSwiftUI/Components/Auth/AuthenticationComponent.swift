@@ -17,8 +17,16 @@ public struct AuthenticationComponent: View {
     /// Custom URL scheme the backend OAuth flow redirects to (R3: requires
     /// backend support; provider buttons degrade gracefully without it).
     private let oauthCallbackScheme: String
+    /// Two-way override of the server's registration gate: `false` hides sign-up
+    /// even when the configuration allows it, `true` shows it even when the
+    /// configuration denies it, `nil` leaves the configuration in charge.
+    private let allowRegistration: Bool?
     private let onAuthenticationSuccess: ((AuthenticationResponse) -> Void)?
     private let onAuthenticationError: ((String) -> Void)?
+    /// Host-owned sign-up action for the login footer, still gated by the
+    /// resolved registration access. Without it the button opens this
+    /// component's own register view.
+    private let onRegisterClick: (() -> Void)?
 
     @State private var model: WildwoodAuthModel?
 
@@ -27,21 +35,30 @@ public struct AuthenticationComponent: View {
         title: String? = nil,
         showDetailedErrors: Bool = true,
         oauthCallbackScheme: String = "wildwoodcomponents",
+        allowRegistration: Bool? = nil,
         onAuthenticationSuccess: ((AuthenticationResponse) -> Void)? = nil,
-        onAuthenticationError: ((String) -> Void)? = nil
+        onAuthenticationError: ((String) -> Void)? = nil,
+        onRegisterClick: (() -> Void)? = nil
     ) {
         self.appId = appId
         self.title = title
         self.showDetailedErrors = showDetailedErrors
         self.oauthCallbackScheme = oauthCallbackScheme
+        self.allowRegistration = allowRegistration
         self.onAuthenticationSuccess = onAuthenticationSuccess
         self.onAuthenticationError = onAuthenticationError
+        self.onRegisterClick = onRegisterClick
     }
 
     public var body: some View {
         Group {
             if let model {
-                AuthFlowView(model: model, oauthCallbackScheme: oauthCallbackScheme)
+                AuthFlowView(
+                    model: model,
+                    oauthCallbackScheme: oauthCallbackScheme,
+                    allowRegistration: allowRegistration,
+                    onRegisterClick: onRegisterClick
+                )
             } else {
                 LoadingSpinnerView()
             }
@@ -65,11 +82,23 @@ public struct AuthenticationComponent: View {
 private struct AuthFlowView: View {
     @Bindable var model: WildwoodAuthModel
     let oauthCallbackScheme: String
+    let allowRegistration: Bool?
+    let onRegisterClick: (() -> Void)?
     @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+
+    /// The component override applied over the model's configuration gate. Read
+    /// during render so the register view collapses without a state write.
+    private var registrationAccess: RegistrationAccess {
+        RegistrationAccess.resolve(
+            allowRegistrationProp: allowRegistration,
+            configAllowsRegistration: model.allowRegistration,
+            view: model.view
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(model.resolveTitle())
+            Text(model.resolveTitle(for: registrationAccess.view))
                 .font(.title2.weight(.bold))
 
             if !model.errorMessage.isEmpty {
@@ -81,7 +110,7 @@ private struct AuthFlowView: View {
                     .foregroundStyle(.green)
             }
 
-            switch model.view {
+            switch registrationAccess.view {
             case .login: loginView
             case .register: registerView
             case .twoFactor: twoFactorView
@@ -101,9 +130,7 @@ private struct AuthFlowView: View {
                 .textContentType(.username)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            SecureField("Password", text: $model.password)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.password)
+            WildwoodSecureField("Password", text: $model.password)
 
             Toggle("Remember me", isOn: $model.rememberMe)
                 .font(.subheadline)
@@ -132,9 +159,13 @@ private struct AuthFlowView: View {
             }
 
             HStack {
-                if model.allowRegistration {
-                    Button("Create account") { model.toggleMode() }
-                        .font(.footnote)
+                if registrationAccess.showRegistration {
+                    // onRegisterClick hands sign-up to the host app; without it the
+                    // button falls back to this component's own register view.
+                    Button("Create account") {
+                        if let onRegisterClick { onRegisterClick() } else { model.toggleMode() }
+                    }
+                    .font(.footnote)
                 }
                 Spacer()
                 if model.allowPasswordReset {
@@ -271,12 +302,8 @@ private struct AuthFlowView: View {
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            SecureField("Password", text: $model.regPassword)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
-            SecureField("Confirm password", text: $model.regConfirmPassword)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
+            WildwoodSecureField("Password", text: $model.regPassword, contentType: .newPassword)
+            WildwoodSecureField("Confirm password", text: $model.regConfirmPassword, contentType: .newPassword)
 
             if let config = model.authConfig {
                 Text(AuthService.getPasswordRequirementsText(config: config))
@@ -380,12 +407,8 @@ private struct AuthFlowView: View {
             Text("Your password must be updated before continuing.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            SecureField("New password", text: $model.newPassword)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
-            SecureField("Confirm new password", text: $model.confirmPassword)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
+            WildwoodSecureField("New password", text: $model.newPassword, contentType: .newPassword)
+            WildwoodSecureField("Confirm new password", text: $model.confirmPassword, contentType: .newPassword)
             Button {
                 Task { await model.handlePasswordReset() }
             } label: {

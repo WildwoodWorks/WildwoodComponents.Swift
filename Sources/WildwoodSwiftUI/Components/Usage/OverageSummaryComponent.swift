@@ -10,18 +10,22 @@ public struct OverageSummaryComponent: View {
     @Environment(\.wildwoodTheme) private var theme
 
     private let appId: String?
+    /// Replaces the (merged) statuses instead of fetching them; never passed
+    /// through `onMergeUsage` (React/RN/Blazor semantics).
     private let limitStatusesOverride: [AppTierLimitStatusModel]?
-    private let onMergeUsage: (([AppTierLimitStatusModel]) -> [AppTierLimitStatusModel])?
+    /// Same closure shape as UsageDashboardComponent so the package has one type.
+    private let onMergeUsage: (@MainActor ([AppTierLimitStatusModel], UserTierSubscriptionModel?) async -> [AppTierLimitStatusModel])?
     private let onUpgradeRequested: (() -> Void)?
 
     @State private var isLoading = true
     @State private var errorMessage = ""
     @State private var statuses: [AppTierLimitStatusModel] = []
+    @State private var subscription: UserTierSubscriptionModel?
 
     public init(
         appId: String? = nil,
         limitStatusesOverride: [AppTierLimitStatusModel]? = nil,
-        onMergeUsage: (([AppTierLimitStatusModel]) -> [AppTierLimitStatusModel])? = nil,
+        onMergeUsage: (@MainActor ([AppTierLimitStatusModel], UserTierSubscriptionModel?) async -> [AppTierLimitStatusModel])? = nil,
         onUpgradeRequested: (() -> Void)? = nil
     ) {
         self.appId = appId
@@ -75,16 +79,25 @@ public struct OverageSummaryComponent: View {
         .task { await load() }
     }
 
+    /// The same 80% threshold the dashboard defaults to, so both surfaces flag
+    /// the same limits.
     private var flagged: [AppTierLimitStatusModel] {
-        statuses.filter { $0.isExceeded || $0.isAtWarningThreshold }
+        statuses.filter { UsageMath.barState($0, warningThreshold: 80) != .ok }
     }
 
     private func load() async {
         isLoading = true
         defer { isLoading = false }
 
+        // Subscription is an enrichment passed to onMergeUsage; a failed lookup
+        // keeps the previous value instead of erroring the summary.
+        if let client, let id = appId ?? client.config.appId {
+            do { subscription = try await client.appTier.getUserSubscription(appId: id) } catch { }
+        }
+
+        // The override REPLACES the merged output; it is never passed through onMergeUsage.
         if let limitStatusesOverride {
-            statuses = onMergeUsage?(limitStatusesOverride) ?? limitStatusesOverride
+            statuses = limitStatusesOverride
             return
         }
 
@@ -94,7 +107,11 @@ public struct OverageSummaryComponent: View {
             return
         }
         let fetched = await client.appTier.getAllLimitStatuses(appId: resolvedAppId)
-        statuses = onMergeUsage?(fetched) ?? fetched
+        if let onMergeUsage {
+            statuses = await onMergeUsage(fetched, subscription)
+        } else {
+            statuses = fetched
+        }
     }
 }
 #endif

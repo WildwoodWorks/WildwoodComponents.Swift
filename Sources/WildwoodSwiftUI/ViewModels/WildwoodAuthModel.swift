@@ -5,7 +5,7 @@ import Foundation
 import Observation
 import WildwoodCore
 
-public enum AuthView: Sendable {
+public enum AuthView: Sendable, Equatable {
     case login, register, twoFactor, passwordReset, forgotPassword, disclaimers
 }
 
@@ -123,6 +123,13 @@ public final class WildwoodAuthModel {
     }
 
     public func resolveTitle() -> String {
+        resolveTitle(for: view)
+    }
+
+    /// Title for an explicitly supplied view. Components that render a view other
+    /// than the model's own — the registration gate collapses `.register` to
+    /// `.login` — must title the view they actually show.
+    public func resolveTitle(for view: AuthView) -> String {
         if let title { return title }
         switch view {
         case .login: return "Sign In"

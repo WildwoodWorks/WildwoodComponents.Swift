@@ -90,12 +90,8 @@ public struct TokenRegistrationComponent: View {
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            SecureField("Password", text: $password)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
-            SecureField("Confirm password", text: $confirmPassword)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
+            WildwoodSecureField("Password", text: $password, contentType: .newPassword)
+            WildwoodSecureField("Confirm password", text: $confirmPassword, contentType: .newPassword)
 
             Button {
                 Task { await register() }
