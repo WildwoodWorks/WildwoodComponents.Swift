@@ -50,6 +50,7 @@ public final class PaymentService: Sendable {
     /// For Apple, `receiptData` is the StoreKit 2 JWS representation (or legacy
     /// receipt). The backend records the transaction so the purchase remains
     /// managed in Wildwood, and may return a linked `subscriptionId`.
+    @available(*, deprecated, message: "Use validateStorePurchase(appId:purchase:) — it carries the product id, restore flag and store transaction id the server needs for in-app purchases.")
     public func validateAppStoreReceipt(
         appId: String,
         receiptData: String,
@@ -65,6 +66,42 @@ public final class PaymentService: Sendable {
             return try await http.post("api/payment/validate-apple-receipt", body: body)
         }
         return try await http.post("api/payment/validate-google-receipt", body: body)
+    }
+
+    /// Validates a native App Store / Play Store purchase and records it as a
+    /// Wildwood payment transaction. THROWS on transport/HTTP failure (no silent
+    /// result). The returned `transactionId` is the Wildwood transaction id,
+    /// which callers pass as `paymentTransactionId` to `appTier.changeTier` /
+    /// `appTier.selfSubscribe`.
+    public func validateStorePurchase(appId: String, purchase: StorePurchase) async throws -> StorePurchaseValidationResult {
+        // Field names and casing are the JS body verbatim (paymentService.ts
+        // validateStorePurchase): nil optionals are omitted, like `undefined`.
+        // receiptData duplicates purchaseToken because WildwoodAPI's
+        // ValidateReceiptRequest binds receiptData; purchaseToken is the contract name.
+        struct StorePurchaseDto: Encodable {
+            let appId: String
+            let providerType: StoreProviderType
+            let productId: String
+            let purchaseToken: String
+            let receiptData: String
+            let transactionId: String?
+            let isRestore: Bool?
+        }
+        let body = StorePurchaseDto(
+            appId: appId,
+            providerType: purchase.providerType,
+            productId: purchase.productId,
+            purchaseToken: purchase.purchaseToken,
+            receiptData: purchase.purchaseToken,
+            transactionId: purchase.transactionId,
+            isRestore: purchase.isRestore
+        )
+        switch purchase.providerType {
+        case .appleAppStore:
+            return try await http.post("api/payment/validate-apple-receipt", body: body)
+        case .googlePlayStore:
+            return try await http.post("api/payment/validate-google-receipt", body: body)
+        }
     }
 
     public func getPaymentStatus(transactionId: String) async throws -> PaymentCompletionResult {

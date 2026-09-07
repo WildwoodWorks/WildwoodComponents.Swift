@@ -85,4 +85,100 @@ struct PaymentServiceTests {
         #expect(body["externalTransactionId"] as? String == "pi_123")
         #expect(body["userId"] as? String == "u1")
     }
+
+    // MARK: - validateStorePurchase (IAP contract)
+
+    @Test func validateStorePurchaseRoutesAppleToTheAppleEndpointWithTheFullBody() async throws {
+        let (service, backend) = makeService()
+        backend.stub("POST", "/api/payment/validate-apple-receipt", .init(json: #"{"success":true,"transactionId":"ww-txn-1"}"#))
+
+        _ = try await service.validateStorePurchase(
+            appId: "app-1",
+            purchase: StorePurchase(
+                providerType: .appleAppStore,
+                productId: "com.wildwood.pro.monthly",
+                purchaseToken: "signed-jws"
+            )
+        )
+
+        let req = try #require(backend.requests().first { $0.path == "/api/payment/validate-apple-receipt" })
+        let body = try jsonBody(req)
+        #expect(body["appId"] as? String == "app-1")
+        #expect(body["providerType"] as? Int == 10)
+        #expect(body["productId"] as? String == "com.wildwood.pro.monthly")
+        #expect(body["purchaseToken"] as? String == "signed-jws")
+        // The server binds receiptData, so the token is sent under both names.
+        #expect(body["receiptData"] as? String == "signed-jws")
+        // nil optionals are omitted, like `undefined` in the JS body.
+        #expect(body.keys.contains("transactionId") == false)
+        #expect(body.keys.contains("isRestore") == false)
+    }
+
+    @Test func validateStorePurchaseRoutesGoogleToTheGoogleEndpoint() async throws {
+        let (service, backend) = makeService()
+        backend.stub("POST", "/api/payment/validate-google-receipt", .init(json: #"{"success":true}"#))
+
+        _ = try await service.validateStorePurchase(
+            appId: "app-1",
+            purchase: StorePurchase(
+                providerType: .googlePlayStore,
+                productId: "pro_monthly",
+                purchaseToken: "play-token"
+            )
+        )
+
+        let req = try #require(backend.requests().first { $0.path == "/api/payment/validate-google-receipt" })
+        let body = try jsonBody(req)
+        #expect(body["providerType"] as? Int == 11)
+        #expect(body["purchaseToken"] as? String == "play-token")
+        #expect(body["receiptData"] as? String == "play-token")
+    }
+
+    @Test func validateStorePurchasePassesTheValidationResultThrough() async throws {
+        let (service, backend) = makeService()
+        backend.stub(
+            "POST", "/api/payment/validate-apple-receipt",
+            .init(json: #"{"success":true,"transactionId":"ww-txn-9","status":"completed"}"#)
+        )
+
+        let result = try await service.validateStorePurchase(
+            appId: "app-1",
+            purchase: StorePurchase(providerType: .appleAppStore, productId: "pro", purchaseToken: "jws")
+        )
+
+        #expect(result.success == true)
+        #expect(result.transactionId == "ww-txn-9")
+        #expect(result.status == "completed")
+    }
+
+    @Test func validateStorePurchaseIncludesTheStoreTransactionIdAndRestoreFlagWhenSet() async throws {
+        let (service, backend) = makeService()
+        backend.stub("POST", "/api/payment/validate-apple-receipt", .init(json: #"{"success":true}"#))
+
+        _ = try await service.validateStorePurchase(
+            appId: "app-1",
+            purchase: StorePurchase(
+                providerType: .appleAppStore,
+                productId: "pro",
+                purchaseToken: "jws",
+                transactionId: "store-txn-7",
+                isRestore: true
+            )
+        )
+
+        let req = try #require(backend.requests().first { $0.path == "/api/payment/validate-apple-receipt" })
+        let body = try jsonBody(req)
+        #expect(body["transactionId"] as? String == "store-txn-7")
+        #expect(body["isRestore"] as? Bool == true)
+    }
+
+    @Test func validateStorePurchaseThrowsOnFailure() async {
+        let (service, _) = makeService() // no stub → 404
+        await #expect(throws: WildwoodError.self) {
+            _ = try await service.validateStorePurchase(
+                appId: "app-1",
+                purchase: StorePurchase(providerType: .appleAppStore, productId: "pro", purchaseToken: "jws")
+            )
+        }
+    }
 }
