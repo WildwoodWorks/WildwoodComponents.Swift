@@ -10,13 +10,31 @@ public extension EnvironmentValues {
 }
 
 public extension View {
-    /// Inject a WildwoodClient into the environment and initialize it (session
-    /// restore, theme load) when the view first appears.
+    /// Inject a WildwoodClient, initialize it (session restore, theme load) on
+    /// first appearance, and apply the client's current theme
+    /// (`WildwoodTheme.named(client.theme.theme)`) to the subtree — live, since
+    /// ThemeService is @Observable — unless the host pinned one with `.wildwoodTheme(_:)`.
     func wildwoodClient(_ client: WildwoodClient) -> some View {
         environment(\.wildwoodClient, client)
+            .modifier(WildwoodServiceThemeModifier(client: client))
             .task {
                 await client.initialize()
             }
+    }
+}
+
+/// The SwiftUI twin of WildwoodProvider's `resolveTheme(theme ?? serviceTheme)`.
+private struct WildwoodServiceThemeModifier: ViewModifier {
+    let client: WildwoodClient
+    @Environment(\.wildwoodTheme) private var inheritedTheme
+    @Environment(\.wildwoodThemeIsExplicit) private var isExplicit
+
+    func body(content: Content) -> some View {
+        // Reading client.theme.theme registers the Observable dependency: the
+        // restore in initialize() and later setTheme() calls re-run this body.
+        // When the host pinned a theme, re-apply it unchanged (no branching, so
+        // the subtree keeps its identity).
+        content.applyWildwoodTheme(isExplicit ? inheritedTheme : WildwoodTheme.named(client.theme.theme))
     }
 }
 

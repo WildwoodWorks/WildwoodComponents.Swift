@@ -63,7 +63,7 @@ public struct PricingDisplayComponent: View {
             errorMessage = "PricingDisplayComponent requires an appId."
             return
         }
-        let loaded = await client.appTier.getTiers(appId: resolvedAppId)
+        let loaded = await client.appTier.getPublicTiers(appId: resolvedAppId)
         tiers = loaded.sorted { $0.displayOrder < $1.displayOrder }
     }
 }
