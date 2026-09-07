@@ -55,9 +55,13 @@ WildwoodCore        ← services, models, session/token mgmt, storage (zero UI i
   while CI is on older Xcode).
 - Tokens/user go to Keychain, other keys to UserDefaults (CompositeStorage default).
 - Payments: provider selection is backend-driven via `PlatformFilteredProvidersDto` — never
-  hardcode a processor. App Store path = StoreKit 2 → `api/payment/validate-apple-receipt` →
-  `linkTransactionToUser` → `selfSubscribe(paymentTransactionId:)`. Other providers = generic
-  `initiatePayment`/`confirmPayment` with external web checkout.
+  hardcode a processor. App Store path = StoreKit 2 → `payment.validateStorePurchase` →
+  `api/payment/validate-apple-receipt` (body carries productId, the store transactionId,
+  isRestore, and receiptData = the JWS) → `linkTransactionToUser` →
+  `selfSubscribe(paymentTransactionId:)`. A StoreKit transaction is finished only after a
+  successful validation that returned a Wildwood transactionId (restores: success alone) —
+  see `StorePurchaseSettlement`. Other providers = generic `initiatePayment`/`confirmPayment`
+  with external web checkout.
 
 ## Commands (macOS only — code is authored on Windows, built on a Mac/CI)
 

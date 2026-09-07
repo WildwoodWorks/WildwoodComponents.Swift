@@ -64,9 +64,27 @@ public extension EnvironmentValues {
     @Entry var wildwoodTheme: WildwoodTheme = .woodlandWarm
 }
 
-public extension View {
-    func wildwoodTheme(_ theme: WildwoodTheme) -> some View {
+extension EnvironmentValues {
+    /// Set by `.wildwoodTheme(_:)`. The `.wildwoodClient(_:)` bridge leaves the
+    /// theme alone below an explicit host choice, whichever side of the client
+    /// modifier it sits on — the React Native rule: an explicit `theme` prop beats
+    /// the service's stored preference.
+    @Entry var wildwoodThemeIsExplicit: Bool = false
+}
+
+extension View {
+    /// Environment + tint without claiming the explicit flag (used by the client bridge).
+    func applyWildwoodTheme(_ theme: WildwoodTheme) -> some View {
         environment(\.wildwoodTheme, theme)
             .tint(theme.accent)
+    }
+}
+
+public extension View {
+    /// Pin a theme for this subtree. Wins over the ThemeService-driven theme that
+    /// `.wildwoodClient(_:)` applies, in either modifier order.
+    func wildwoodTheme(_ theme: WildwoodTheme) -> some View {
+        applyWildwoodTheme(theme)
+            .environment(\.wildwoodThemeIsExplicit, true)
     }
 }

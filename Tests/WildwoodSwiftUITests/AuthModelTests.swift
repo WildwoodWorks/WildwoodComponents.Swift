@@ -64,4 +64,14 @@ struct AuthModelTests {
         await model.handleRegister()
         #expect(model.errorMessage == "Passwords do not match")
     }
+
+    // The registration gate can collapse .register to .login during render, so the
+    // component titles the view it actually shows rather than the model's own.
+    @Test func resolveTitleForAViewIgnoresTheInternalView() {
+        let model = makeModel()
+        model.toggleMode()
+        #expect(model.view == .register)
+        #expect(model.resolveTitle(for: .login) == "Sign In")
+        #expect(model.resolveTitle() == "Create Account")
+    }
 }

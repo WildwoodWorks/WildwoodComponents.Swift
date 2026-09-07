@@ -45,4 +45,22 @@ struct ThemeServiceTests {
         #expect(service.theme == "fall-colors")
         #expect(storage.getItem(WildwoodStorageKeys.theme) == "fall-colors")
     }
+
+    @Test func initializeDoesNotEmitButSetThemeEmitsThemeChanged() {
+        let storage = MemoryStorage()
+        storage.setItem(WildwoodStorageKeys.theme, "cool-blue")
+        let events = WildwoodEventEmitter()
+        let service = ThemeService(storage: storage, events: events)
+        var received: [String] = []
+        events.on { event in
+            if case .themeChanged(let name) = event { received.append(name) }
+        }
+
+        service.initialize()
+        #expect(service.theme == "cool-blue")
+        #expect(received.isEmpty)   // JS parity: the restore is observable via `theme`, not an event
+
+        service.setTheme("fall-colors")
+        #expect(received == ["fall-colors"])
+    }
 }

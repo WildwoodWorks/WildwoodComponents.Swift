@@ -29,6 +29,24 @@ struct AppTierServiceTests {
         #expect(backend.requests().contains { $0.method == "GET" && $0.path == "/api/app-tiers/app-1/public" })
     }
 
+    // PricingDisplayComponent calls getPublicTiers (parity with the other stacks'
+    // public pricing pages): same public endpoint, and skipAuth keeps the bearer
+    // token off it even when a session is active.
+    @Test func getPublicTiersUsesThePublicEndpointWithoutAuth() async throws {
+        let backend = MockBackend()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        await http.setTokenProvider { "jwt-123" }
+        let service = AppTierService(http: http)
+        backend.stub("GET", "/api/app-tiers/app-1/public", .init(json: #"[{"id":"t1"}]"#))
+
+        let tiers = await service.getPublicTiers(appId: "app-1")
+
+        #expect(tiers.count == 1)
+        let req = try #require(backend.requests().first { $0.method == "GET" && $0.path == "/api/app-tiers/app-1/public" })
+        #expect(req.headers["Authorization"] == nil)
+    }
+
     @Test func getTiersReturnsEmptyOnError() async {
         let (service, _) = makeService() // no stub -> []
         #expect(await service.getTiers(appId: "app-1").isEmpty)

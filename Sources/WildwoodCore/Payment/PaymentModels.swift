@@ -31,6 +31,70 @@ public enum PaymentProviderCategory: Int, Codable, Sendable {
     case cryptocurrency = 6
 }
 
+// MARK: - In-app purchase (IAP) contract — port of @wildwood/core/src/payment/iapTypes.ts
+
+/// Maps a store product id (App Store Connect / Google Play Console) onto the
+/// Wildwood tier — and optionally the pricing model — it grants.
+public struct IapProductMapping: Codable, Sendable, Equatable {
+    public var productId: String
+    public var tierId: String
+    public var pricingId: String?
+
+    public init(productId: String, tierId: String, pricingId: String? = nil) {
+        self.productId = productId
+        self.tierId = tierId
+        self.pricingId = pricingId
+    }
+}
+
+/// The payment provider types that represent a native app store. Raw values are
+/// the PaymentProviderType integers, so the wire value is identical to the JS
+/// `PaymentProviderType.AppleAppStore | GooglePlayStore` union.
+public enum StoreProviderType: Int, Codable, Sendable, CaseIterable {
+    case appleAppStore = 10
+    case googlePlayStore = 11
+
+    public var paymentProviderType: PaymentProviderType {
+        switch self {
+        case .appleAppStore: return .appleAppStore
+        case .googlePlayStore: return .googlePlayStore
+        }
+    }
+}
+
+/// A completed native store purchase, ready to be handed to the server for
+/// validation — the receipt hand-off seam, independent of the store library.
+public struct StorePurchase: Codable, Sendable, Equatable {
+    public var providerType: StoreProviderType
+    /// The store product id that was purchased.
+    public var productId: String
+    /// Proof of purchase: the StoreKit 2 signed JWS transaction on Apple, the
+    /// Play Billing `purchaseToken` on Google.
+    public var purchaseToken: String
+    /// The store's own transaction id, when the client has it.
+    public var transactionId: String?
+    /// True when this purchase came from a restore flow rather than a fresh purchase.
+    public var isRestore: Bool?
+
+    public init(
+        providerType: StoreProviderType,
+        productId: String,
+        purchaseToken: String,
+        transactionId: String? = nil,
+        isRestore: Bool? = nil
+    ) {
+        self.providerType = providerType
+        self.productId = productId
+        self.purchaseToken = purchaseToken
+        self.transactionId = transactionId
+        self.isRestore = isRestore
+    }
+}
+
+/// `transactionId` on the result is the Wildwood payment transaction id — pass it
+/// as `paymentTransactionId` to `appTier.changeTier` / `appTier.selfSubscribe`.
+public typealias StorePurchaseValidationResult = PaymentCompletionResult
+
 public struct PaymentProviderDto: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var name: String

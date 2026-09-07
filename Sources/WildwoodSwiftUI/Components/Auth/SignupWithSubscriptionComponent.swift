@@ -142,12 +142,8 @@ public struct SignupWithSubscriptionComponent: View {
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            SecureField("Password", text: $password)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
-            SecureField("Confirm password", text: $confirmPassword)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.newPassword)
+            WildwoodSecureField("Password", text: $password, contentType: .newPassword)
+            WildwoodSecureField("Confirm password", text: $confirmPassword, contentType: .newPassword)
 
             // The optional token entry is suppressible (showOptionalTokenEntry);
             // when tokens are the only registration path the field always shows.
