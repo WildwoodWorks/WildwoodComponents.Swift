@@ -15,6 +15,11 @@ public enum WildwoodStorageKeys {
     /// check, so it is excluded from the cross-stack localStorage-key comparison.
     public static let consent = "ww_consent"
 
+    /// Campaign Attribution blob `{ v, visitorKey, first, last, updatedAt }`: the first and last
+    /// campaign touch, persisted only once the app's consent category allows it
+    /// (`ATTRIBUTION_STORAGE_KEY` in @wildwood/core, `WildwoodStorageKeys.Attribution` in .NET).
+    public static let attribution = "ww_attribution"
+
     /// Prefix for per-thread message draft keys (`ww_draft_{threadId}` in the JS SDK).
     public static let draftPrefix = "ww_draft_"
 
