@@ -34,6 +34,8 @@ public final class WildwoodClient {
     public let features: FeatureStore
     @ObservationIgnored public let feedback: FeedbackService
     @ObservationIgnored public let consent: ConsentService
+    /// Campaign Attribution: capture from `.onOpenURL`, then pass `getForRegistration()` in RegistrationRequest.
+    @ObservationIgnored public let attribution: AttributionService
     public let theme: ThemeService
     public let events: WildwoodEventEmitter
 
@@ -64,7 +66,9 @@ public final class WildwoodClient {
         self.appTier = appTier
         self.features = FeatureStore(appTier: appTier, defaultAppId: config.appId, events: events)
         self.feedback = FeedbackService(http: http, defaultAppId: config.appId ?? "")
-        self.consent = ConsentService(http: http, storage: storage, defaultAppId: config.appId ?? "")
+        let consent = ConsentService(http: http, storage: storage, defaultAppId: config.appId ?? "")
+        self.consent = consent
+        self.attribution = AttributionService(http: http, storage: storage, consent: consent, defaultAppId: config.appId ?? "")
         self.theme = ThemeService(storage: storage, events: events)
     }
 

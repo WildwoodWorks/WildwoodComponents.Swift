@@ -115,6 +115,7 @@ public final class AuthService: Sendable {
             let AppId: String
             let Platform: String?
             let DeviceInfo: String?
+            let Attribution: AttributionPayload?
         }
 
         let dto = TokenRegistrationDto(
@@ -126,7 +127,8 @@ public final class AuthService: Sendable {
             LastName: request.lastName,
             AppId: request.appId,
             Platform: request.platform,
-            DeviceInfo: request.deviceInfo
+            DeviceInfo: request.deviceInfo,
+            Attribution: request.attribution
         )
 
         let raw = try await http.postData("api/userregistration/register-with-token", body: dto, skipAuth: true)
@@ -173,6 +175,7 @@ public final class AuthService: Sendable {
             let Platform: String?
             let DeviceInfo: String?
             let PricingModelId: String?
+            let Attribution: AttributionPayload?
         }
 
         let dto = OpenRegistrationDto(
@@ -184,7 +187,8 @@ public final class AuthService: Sendable {
             AppId: request.appId,
             Platform: request.platform,
             DeviceInfo: request.deviceInfo,
-            PricingModelId: pricingModelId
+            PricingModelId: pricingModelId,
+            Attribution: request.attribution
         )
 
         return try await http.post("api/userregistration/register", body: dto, skipAuth: true)

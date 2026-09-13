@@ -65,6 +65,8 @@ public struct RegistrationRequest: Codable, Sendable, Equatable {
     public var captchaResponse: String?
     public var licenseToken: String?
     public var registrationToken: String?
+    /// Campaign Attribution payload (`client.attribution.getForRegistration()`). Nil sends none.
+    public var attribution: AttributionPayload?
 
     public init(
         email: String,
@@ -81,7 +83,8 @@ public struct RegistrationRequest: Codable, Sendable, Equatable {
         phoneNumber: String? = nil,
         captchaResponse: String? = nil,
         licenseToken: String? = nil,
-        registrationToken: String? = nil
+        registrationToken: String? = nil,
+        attribution: AttributionPayload? = nil
     ) {
         self.email = email
         self.username = username
@@ -98,6 +101,7 @@ public struct RegistrationRequest: Codable, Sendable, Equatable {
         self.captchaResponse = captchaResponse
         self.licenseToken = licenseToken
         self.registrationToken = registrationToken
+        self.attribution = attribution
     }
 }
 
