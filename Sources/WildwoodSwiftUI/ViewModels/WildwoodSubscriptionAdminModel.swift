@@ -40,6 +40,11 @@ public final class WildwoodSubscriptionAdminModel {
     public private(set) var overrides: [AppFeatureOverrideModel] = []
     public private(set) var tierChangePreview: TierChangePreviewModel?
 
+    /// Whether this account may still start a free trial, on the tier and per pack. Loaded by
+    /// ``loadTrialEligibility()`` once the user is signed in; until then the catalog's advertised
+    /// trial days are all a screen can honestly show (DD-6).
+    public private(set) var trialEligibility: TrialEligibilityModel?
+
     /// Result of the most recent cancel action. Surfaced so the status panel
     /// can show requiresUserAction store instructions (App Store billing
     /// can't be stopped server-side — the user must also cancel there).
@@ -198,6 +203,206 @@ public final class WildwoodSubscriptionAdminModel {
         tierChangePreview = nil
     }
 
+    /// Price a change by ids rather than by model — what a driver holds. Answers nil when the
+    /// server would not price it, having already set ``errorMessage``.
+    ///
+    /// Company scope falls back to the self preview endpoint (no company preview endpoint
+    /// exists — standing parity decision).
+    @discardableResult
+    public func previewTierChange(tierId: String, pricingId: String?) async -> TierChangePreviewModel? {
+        do {
+            let preview: TierChangePreviewModel
+            switch scope {
+            case .user(let userId):
+                preview = try await client.appTier.previewTierChangeAdmin(
+                    appId: appId, userId: userId, newTierId: tierId, newPricingId: pricingId
+                )
+            case .currentUser, .company:
+                preview = try await client.appTier.previewTierChange(
+                    appId: appId, newTierId: tierId, newPricingId: pricingId
+                )
+            }
+            guard preview.success else {
+                errorMessage = preview.errorMessage ?? "The plan change could not be priced."
+                tierChangePreview = nil
+                return nil
+            }
+            tierChangePreview = preview
+            return preview
+        } catch {
+            handleError(error)
+            tierChangePreview = nil
+            return nil
+        }
+    }
+
+    /// Post a plan change, for a driver that already knows whether this is a change or a first
+    /// subscribe and whether anything here can answer a bank challenge.
+    ///
+    /// `supportsPaymentAction` reaches the wire ONLY on the self-service change, and only when the
+    /// caller said so: without it the plain body goes up and the server refuses a change that
+    /// needs 3-D Secure rather than parking one nobody could finish. Admin-scoped changes are
+    /// authorised server-side and their endpoints carry neither a transaction id nor the flag.
+    ///
+    /// Never throws: a transport failure comes back as an unsuccessful result, so the caller's
+    /// state machine reads one shape. `requiresAction` and `processing` mean "not yet", not
+    /// "refused", and are NOT surfaced as errors.
+    @discardableResult
+    public func postTierChange(
+        tierId: String,
+        pricingId: String?,
+        tierName: String? = nil,
+        isChange: Bool,
+        immediate: Bool,
+        paymentTransactionId: String? = nil,
+        supportsPaymentAction: Bool = false
+    ) async -> AppTierChangeResultModel {
+        clearMessages()
+        do {
+            let result: AppTierChangeResultModel = try await sendTierChange(
+                tierId: tierId,
+                pricingId: pricingId,
+                isChange: isChange,
+                immediate: immediate,
+                paymentTransactionId: paymentTransactionId,
+                supportsPaymentAction: supportsPaymentAction
+            )
+            await settleTierChange(result, operation: "change the plan", tierName: tierName)
+            return result
+        } catch {
+            let message: String = (error as? WildwoodError)?.message ?? error.localizedDescription
+            errorMessage = message
+            return AppTierChangeResultModel(success: false, errorMessage: message)
+        }
+    }
+
+    /// Finish a plan change the server parked on a bank challenge. Safe to repeat — the server
+    /// verifies the payment with the processor before it moves anything — and `processing` is
+    /// answered as data, not as an error.
+    @discardableResult
+    public func completeTierChange(pendingChangeId: String) async -> AppTierChangeResultModel {
+        clearMessages()
+        do {
+            let result: AppTierChangeResultModel = try await client.appTier.completeTierChange(
+                appId: appId, pendingChangeId: pendingChangeId
+            )
+            await settleTierChange(result, operation: "complete the plan change", tierName: nil)
+            return result
+        } catch {
+            let message: String = (error as? WildwoodError)?.message ?? error.localizedDescription
+            errorMessage = message
+            return AppTierChangeResultModel(success: false, errorMessage: message)
+        }
+    }
+
+    /// Whether this account may still start a free trial. Never throws: an unknown answer reads as
+    /// eligible, which is what the catalog already advertises.
+    @discardableResult
+    public func loadTrialEligibility() async -> TrialEligibilityModel {
+        let result: TrialEligibilityModel = (try? await client.appTier.trialEligibility(appId: appId))
+            ?? TrialEligibilityModel()
+        trialEligibility = result
+        return result
+    }
+
+    /// The packs the app sells publicly, for a surface that has no session yet. Failures leave the
+    /// list alone rather than emptying it.
+    @discardableResult
+    public func loadPublicAddOns() async -> [AppTierAddOnModel] {
+        guard let packs = try? await client.appTier.getPublicAddOns(appId: appId) else {
+            return availableAddOns
+        }
+        availableAddOns = packs
+        return packs
+    }
+
+    private func sendTierChange(
+        tierId: String,
+        pricingId: String?,
+        isChange: Bool,
+        immediate: Bool,
+        paymentTransactionId: String?,
+        supportsPaymentAction: Bool
+    ) async throws -> AppTierChangeResultModel {
+        switch scope {
+        case .currentUser:
+            if !isChange {
+                return try await client.appTier.selfSubscribe(
+                    appId: appId,
+                    appTierId: tierId,
+                    appTierPricingId: pricingId,
+                    paymentTransactionId: paymentTransactionId
+                )
+            }
+            if supportsPaymentAction {
+                return try await client.appTier.changeTier(
+                    appId: appId,
+                    options: SelfChangeTierOptions(
+                        newTierId: tierId,
+                        newPricingId: pricingId,
+                        immediate: immediate,
+                        paymentTransactionId: paymentTransactionId,
+                        supportsPaymentAction: true
+                    )
+                )
+            }
+            return try await client.appTier.changeTier(
+                appId: appId,
+                newTierId: tierId,
+                newPricingId: pricingId,
+                immediate: immediate,
+                paymentTransactionId: paymentTransactionId
+            )
+
+        case .user(let userId):
+            if !isChange {
+                return try await client.appTier.subscribeUserToTier(
+                    appId: appId, userId: userId, tierId: tierId, pricingId: pricingId
+                )
+            }
+            return try await client.appTier.changeTierAdvanced(
+                appId: appId, userId: userId, newTierId: tierId, newPricingId: pricingId, immediate: immediate
+            )
+
+        case .company(let companyId):
+            if !isChange {
+                return try await client.appTier.subscribeCompanyToTier(
+                    appId: appId, companyId: companyId, tierId: tierId, pricingId: pricingId
+                )
+            }
+            return try await client.appTier.changeCompanyTier(
+                appId: appId, companyId: companyId, newTierId: tierId, pricingId: pricingId, immediate: immediate
+            )
+        }
+    }
+
+    /// Read a change or completion answer: success refreshes, a "not yet" says nothing, and a real
+    /// refusal keeps the server's own words.
+    private func settleTierChange(
+        _ result: AppTierChangeResultModel,
+        operation: String,
+        tierName: String?
+    ) async {
+        if result.success {
+            let planName: String = tierName ?? "your new plan"
+            successMessage = result.isScheduled
+                ? "Tier change scheduled for \(result.effectiveDate?.formatted(date: .abbreviated, time: .omitted) ?? "the next billing period")."
+                : "Tier changed to \(planName)."
+            tierChangePreview = nil
+            invalidateEntitlements(.tierChange)
+            await loadStatus()
+            await loadFeatures()
+            await loadLimits()
+            return
+        }
+
+        // `requiresAction` and `processing` arrive with `success == false` and are the 3-D Secure
+        // path, not a refusal: reporting them as errors tells a customer their plan failed while
+        // the money is still moving.
+        if result.requiresAction == true || result.processing == true { return }
+        errorMessage = Self.refusalMessage(operation, message: result.errorMessage, code: result.errorCode)
+    }
+
     public func changeTier(to tier: AppTierModel, pricing: AppTierPricingModel?, immediate: Bool, paymentTransactionId: String? = nil) async {
         clearMessages()
         do {
@@ -245,8 +450,15 @@ public final class WildwoodSubscriptionAdminModel {
                 await loadStatus()
                 await loadFeatures()
                 await loadLimits()
-            } else {
-                errorMessage = result.errorMessage
+            } else if result.requiresAction != true && result.processing != true {
+                // `requiresAction`/`processing` arrive with `success == false` and mean "not yet",
+                // not "refused" — surfacing them as errors tells a customer their plan failed
+                // while the money is still moving. Only a real refusal reaches the banner.
+                errorMessage = Self.refusalMessage(
+                    "change the plan",
+                    message: result.errorMessage,
+                    code: result.errorCode
+                )
             }
         } catch {
             handleError(error)
@@ -386,7 +598,7 @@ public final class WildwoodSubscriptionAdminModel {
             invalidateEntitlements(.manual)
             await loadLimits()
         } else {
-            errorMessage = "Failed to update the limit."
+            errorMessage = Self.refusalMessage(Self.limitOperation(scope, reset: false))
         }
     }
 
@@ -406,7 +618,7 @@ public final class WildwoodSubscriptionAdminModel {
             invalidateEntitlements(.manual)
             await loadLimits()
         } else {
-            errorMessage = "Failed to reset usage."
+            errorMessage = Self.refusalMessage(Self.limitOperation(scope, reset: true))
         }
     }
 
@@ -425,7 +637,7 @@ public final class WildwoodSubscriptionAdminModel {
             await loadOverrides()
             await loadFeatures()
         } else {
-            errorMessage = "Failed to save the override."
+            errorMessage = Self.refusalMessage("set the feature override")
         }
     }
 
@@ -440,11 +652,37 @@ public final class WildwoodSubscriptionAdminModel {
             await loadOverrides()
             await loadFeatures()
         } else {
-            errorMessage = "Failed to remove the override."
+            errorMessage = Self.refusalMessage("remove the feature override")
         }
     }
 
     // MARK: - Helpers
+
+    /// What a refused mutation says. The server's own words win; failing that the operation is
+    /// named, with the server's code in brackets when it sent one.
+    ///
+    /// Word for word JS's `refusalMessage` in `useSubscriptionAdmin`, because a bare `false` read
+    /// as success is the bug this replaced: "Failed to update the limit." told nobody that the
+    /// limit belonged to another company.
+    static func refusalMessage(_ operation: String, message: String? = nil, code: String? = nil) -> String {
+        if let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return message }
+        if let code, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "The request was refused: could not \(operation) (\(code))."
+        }
+        return "The request was refused: could not \(operation)."
+    }
+
+    /// The JS operation strings for the four usage mutations, which name the scope they act on.
+    static func limitOperation(_ scope: SubscriptionAdminScope, reset: Bool) -> String {
+        switch scope {
+        case .currentUser:
+            return reset ? "reset the usage counter" : "update the usage limit"
+        case .user:
+            return reset ? "reset the user's usage counter" : "update the user's usage limit"
+        case .company:
+            return reset ? "reset the company's usage counter" : "update the company's usage limit"
+        }
+    }
 
     /// Entitlement-changing mutations must also invalidate the shared
     /// FeatureStore — otherwise FeatureGates elsewhere in the app serve the
@@ -452,7 +690,10 @@ public final class WildwoodSubscriptionAdminModel {
     /// useSubscriptionAdmin's `wrapMutation`, which invalidates and THEN emits
     /// `entitlementsChanged` with the reason). Invalidation is lazy: gates
     /// reload on demand via the store's epoch, no eager refetch.
-    private func invalidateEntitlements(_ reason: EntitlementsChangedReason) {
+    /// Internal, not private: the registration/subscription drivers settle the cache themselves
+    /// when a change DRAINS after the view has gone, and a drain has no host callback left to do
+    /// it for them.
+    func invalidateEntitlements(_ reason: EntitlementsChangedReason) {
         client.features.invalidateEntitlements(appId: appId, reason: reason)
     }
 

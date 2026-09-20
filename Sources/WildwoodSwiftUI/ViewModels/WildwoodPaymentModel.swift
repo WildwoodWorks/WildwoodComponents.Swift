@@ -3,10 +3,12 @@
 //
 // Ported from packages/wildwood-react-native/src/components/paymentSession.ts (the DOM-free twin
 // of @wildwood/react's PaymentComponent, JS f8b095f / 05dd7cb) with the Stripe.js half left out:
-// this package takes no payment SDK dependency, so there is nothing here that confirms a client
-// secret. The host-injected payment-action seam that will confirm one is a later change; until it
-// exists this model NEVER sends `supportsSetupIntent`, because a SetupIntent nothing can confirm
-// leaves a trial with no saved card and the plan renews into a failed charge.
+// this package takes no payment SDK dependency of its own. What confirms a client secret is the
+// host-injected ``WildwoodPaymentActionHandler``, and everything here turns on whether one exists.
+// With NO handler the model never sends `supportsSetupIntent` and confirms nothing, because a
+// SetupIntent nothing can confirm leaves a trial with no saved card and a plan that renews into a
+// failed charge. With one, the flag goes up and the secret is routed by its TYPE: a `setup_intent`
+// to `confirmCardSetup`, a payment intent to `confirmPayment`.
 
 import Foundation
 import Observation
@@ -93,6 +95,9 @@ public struct WildwoodPaymentAttempt: Sendable, Equatable {
 @Observable
 public final class WildwoodPaymentModel {
     @ObservationIgnored private let payment: PaymentService
+    /// What can put a bank's challenge or a card sheet in front of the customer, when the host
+    /// supplied anything that can. Nil is the supported default.
+    @ObservationIgnored private let handler: (any WildwoodPaymentActionHandler)?
 
     /// The initiation a previous press left behind, and the key it was made for.
     @ObservationIgnored private var pendingIntentKey: String?
@@ -100,8 +105,23 @@ public final class WildwoodPaymentModel {
     /// The plan the current pending initiation was made for.
     @ObservationIgnored private var currentPlanKey: String?
 
-    public init(payment: PaymentService) {
+    public init(payment: PaymentService, paymentActionHandler: (any WildwoodPaymentActionHandler)? = nil) {
         self.payment = payment
+        self.handler = paymentActionHandler
+    }
+
+    /// Whether the server may be asked for a trial's SetupIntent.
+    ///
+    /// Only a client that can CONFIRM one may ask for one: a SetupIntent nothing confirms leaves a
+    /// trial with no saved card and a plan that renews into a failed charge. So this is the
+    /// handler's own answer, not merely "is there a handler".
+    public var supportsSetupIntent: Bool {
+        RegistrationSubscriptionRules.mayCollectCardInApp(handler)
+    }
+
+    /// Whether a bank challenge on a charge can be answered at all.
+    public var supportsPaymentAction: Bool {
+        RegistrationSubscriptionRules.maySendSupportsPaymentAction(handler)
     }
 
     /// The initiation a retry may reuse. Keyed, because reusing it for a DIFFERENT plan or amount
@@ -121,11 +141,22 @@ public final class WildwoodPaymentModel {
         [attempt.pricingModelId ?? "", String(attempt.trialDays ?? 0), String(attempt.amount)].joined(separator: "|")
     }
 
+    /// The request the attempt posts, as THIS model would post it — which is the only form that
+    /// may carry `supportsSetupIntent`, because only this model knows whether a handler exists.
+    public func makeRequest(_ attempt: WildwoodPaymentAttempt) -> InitiatePaymentRequest {
+        Self.makeRequest(attempt, supportsSetupIntent: supportsSetupIntent)
+    }
+
     /// The request the attempt posts.
     ///
-    /// `supportsSetupIntent` is deliberately never set: only a client that can confirm a
-    /// SetupIntent may ask the server for one.
-    public static func makeRequest(_ attempt: WildwoodPaymentAttempt) -> InitiatePaymentRequest {
+    /// `supportsSetupIntent` is left off entirely unless the caller can confirm one: asking for a
+    /// SetupIntent nothing can confirm leaves a trial with no saved card and a plan that renews
+    /// into a failed charge. It goes up only as `true`, never as an explicit `false` — an older
+    /// server rejects an unknown property, and the server's own default is the old behaviour.
+    public static func makeRequest(
+        _ attempt: WildwoodPaymentAttempt,
+        supportsSetupIntent: Bool = false
+    ) -> InitiatePaymentRequest {
         InitiatePaymentRequest(
             providerId: attempt.providerId,
             appId: attempt.appId,
@@ -141,7 +172,9 @@ public final class WildwoodPaymentModel {
             billingFrequency: attempt.billingFrequency,
             returnUrl: attempt.returnUrl,
             cancelUrl: attempt.cancelUrl,
-            metadata: attempt.metadata
+            metadata: attempt.metadata,
+            billingAddress: nil,
+            supportsSetupIntent: supportsSetupIntent ? true : nil
         )
     }
 
@@ -161,12 +194,40 @@ public final class WildwoodPaymentModel {
         if pendingIntentKey == key, let pendingIntent {
             return pendingIntent
         }
-        let response = try await payment.initiatePayment(Self.makeRequest(attempt))
+        let response = try await payment.initiatePayment(makeRequest(attempt))
         if response.success {
             pendingIntentKey = key
             pendingIntent = response
         }
         return response
+    }
+
+    /// Put the initiation's client secret to the customer, when there is one and something here
+    /// can answer it.
+    ///
+    /// The secret's TYPE decides which way it goes: a `setup_intent` saves a card for a trial and
+    /// goes to ``WildwoodPaymentActionHandler/confirmCardSetup(clientSecret:publishableKey:)``, a
+    /// payment intent is a charge and goes to
+    /// ``WildwoodPaymentActionHandler/confirmPayment(clientSecret:publishableKey:)``. Confirming
+    /// a SetupIntent as a payment charges nothing and saves nothing, which is why the type is read
+    /// rather than assumed.
+    ///
+    /// Answers nil when there is nothing to confirm or nobody to confirm it — the caller then
+    /// carries on with whatever path it had before a handler existed, which is what every host
+    /// without one already does.
+    public func confirmIntent(
+        _ response: InitiatePaymentResponse,
+        publishableKey: String?
+    ) async -> PaymentActionOutcome? {
+        guard let handler = self.handler else { return nil }
+        let clientSecret: String = response.clientSecret ?? ""
+        guard !clientSecret.isEmpty else { return nil }
+
+        if response.clientSecretType == PaymentClientSecretTypes.setupIntent {
+            guard handler.supportsCardSetup else { return nil }
+            return await handler.confirmCardSetup(clientSecret: clientSecret, publishableKey: publishableKey)
+        }
+        return await handler.confirmPayment(clientSecret: clientSecret, publishableKey: publishableKey)
     }
 
     /// Drop the reusable initiation — after a completed payment, or when the plan changes.

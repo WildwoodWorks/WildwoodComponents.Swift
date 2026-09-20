@@ -12,6 +12,12 @@ import WildwoodCore
 public struct PaymentComponent: View {
     @Environment(\.wildwoodClient) private var client
     @Environment(\.openURL) private var openURL
+    @Environment(\.wildwoodPaymentActionHandler) private var environmentPaymentActionHandler
+
+    /// This screen's own payment-action handler, which beats the subtree's and the client's. Nil
+    /// — the default — falls through to those, and no handler anywhere is supported: nothing then
+    /// asks the server for a SetupIntent or claims it can answer a bank challenge.
+    private let paymentActionHandler: (any WildwoodPaymentActionHandler)?
 
     private let appId: String?
     private let amount: Double
@@ -68,10 +74,12 @@ public struct PaymentComponent: View {
         metadata: [String: String]? = nil,
         showAmount: Bool = true,
         treatDevelopmentAsAppStore: Bool = false,
+        paymentActionHandler: (any WildwoodPaymentActionHandler)? = nil,
         onPaymentSuccess: ((PaymentCompletionResult) -> Void)? = nil,
         onPaymentFailure: ((String) -> Void)? = nil,
         onCancel: (() -> Void)? = nil
     ) {
+        self.paymentActionHandler = paymentActionHandler
         self.appId = appId
         self.amount = amount
         self.currency = currency
@@ -105,6 +113,7 @@ public struct PaymentComponent: View {
         subscriptionId: String? = nil,
         showAmount: Bool = true,
         treatDevelopmentAsAppStore: Bool = false,
+        paymentActionHandler: (any WildwoodPaymentActionHandler)? = nil,
         onPaymentSuccess: ((PaymentCompletionResult) -> Void)? = nil,
         onPaymentFailure: ((String) -> Void)? = nil,
         onCancel: (() -> Void)? = nil
@@ -123,6 +132,7 @@ public struct PaymentComponent: View {
             trialDays: args.trialDays,
             showAmount: showAmount,
             treatDevelopmentAsAppStore: treatDevelopmentAsAppStore,
+            paymentActionHandler: paymentActionHandler,
             onPaymentSuccess: onPaymentSuccess,
             onPaymentFailure: onPaymentFailure,
             onCancel: onCancel
@@ -480,7 +490,17 @@ public struct PaymentComponent: View {
         }
 
         if paymentModel == nil {
-            paymentModel = WildwoodPaymentModel(payment: client.payment)
+            // The seam, nearest first: this component's own handler, then the subtree's, then the
+            // client's. Nil all the way down is the supported no-handler state, and is what keeps
+            // `supportsSetupIntent` off the wire.
+            paymentModel = WildwoodPaymentModel(
+                payment: client.payment,
+                paymentActionHandler: WildwoodPaymentAction.resolve(
+                    parameter: paymentActionHandler,
+                    environment: environmentPaymentActionHandler,
+                    client: client
+                )
+            )
         }
 
         // One long-lived manager: observes Transaction.updates so renewals,

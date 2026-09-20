@@ -7,6 +7,11 @@ import WildwoodCore
 
 public extension EnvironmentValues {
     @Entry var wildwoodClient: WildwoodClient? = nil
+
+    /// The payment-action handler in force for this subtree, seeded by
+    /// `.wildwoodPaymentActionHandler(_:)`. Nil — no handler — is the default and a supported
+    /// state; see ``WildwoodPaymentActionHandler``.
+    @Entry var wildwoodPaymentActionHandler: (any WildwoodPaymentActionHandler)? = nil
 }
 
 public extension View {
@@ -21,6 +26,17 @@ public extension View {
             .task {
                 await client.initialize()
             }
+    }
+
+    /// Supply the payment-action handler every Wildwood surface in this subtree uses — the
+    /// SwiftUI analog of React Native's `WildwoodProvider paymentActionHandler` prop.
+    ///
+    /// Precedence, nearest first: a component's own parameter, then this modifier, then
+    /// ``WildwoodClient/paymentActionHandler``. Resolved in one place by
+    /// ``WildwoodPaymentAction/resolve(parameter:environment:client:)`` so no component
+    /// re-derives it.
+    func wildwoodPaymentActionHandler(_ handler: (any WildwoodPaymentActionHandler)?) -> some View {
+        environment(\.wildwoodPaymentActionHandler, handler)
     }
 
     /// Feed deep links and universal links to Campaign Attribution — the native stand-in for the

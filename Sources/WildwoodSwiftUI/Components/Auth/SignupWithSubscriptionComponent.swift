@@ -441,16 +441,56 @@ public struct SignupWithSubscriptionComponent: View {
         isLoading = true
         defer { isLoading = false }
 
+        // ONE implementation of register → sign in → link → subscribe, shared with
+        // `WildwoodSignupFlowModel`: the two screens must not be able to drift on the order the
+        // money and the account are created in. The attempt carries this wizard's own retry
+        // cache, so a failed payment or subscribe still resumes instead of re-registering.
+        let attempt = SignupAccountAttempt()
+        if let establishedAuth {
+            attempt.registered = true
+            attempt.loggedIn = true
+            attempt.authResponse = establishedAuth
+        }
+        var request = SignupAccountRequest(
+            appId: resolvedAppId,
+            form: RegistrationFormData(
+                firstName: firstName,
+                lastName: lastName,
+                username: username.isEmpty ? email : username,
+                email: email,
+                password: password,
+                registrationToken: registrationToken.isEmpty ? nil : registrationToken,
+                useToken: !registrationToken.isEmpty
+            ),
+            tierId: tier?.id,
+            pricingId: pricing?.id,
+            paymentTransactionId: collectedTransactionId,
+            paymentExternalId: nil,
+            tokenGrant: tokenGrant,
+            platform: "ios",
+            deviceInfo: PlatformDetection.deviceInfo()
+        )
+
         do {
             // Register + login once; a retry after a failed payment/subscribe
             // reuses the established session instead of re-registering.
-            let auth: AuthenticationResponse
-            if let establishedAuth {
-                auth = establishedAuth
-            } else {
-                auth = try await registerAndLogin(client: client, appId: resolvedAppId)
-                establishedAuth = auth
+            if let refusal = try await SignupAccountCreator.establishSession(
+                client: client, request: request, attempt: attempt
+            ) {
+                let message = refusal.errorMessage ?? "Registration failed. Please try again."
+                errorMessage = message
+                step = tokenGrant == nil ? .tierSelection : .tokenPlan
+                onSignupError?(message)
+                return
             }
+            guard let auth = attempt.authResponse else {
+                let message = "Login failed after registration. Please try logging in manually."
+                errorMessage = message
+                step = tokenGrant == nil ? .tierSelection : .tokenPlan
+                onSignupError?(message)
+                return
+            }
+            establishedAuth = auth
 
             // A token that granted a plan already paid for it (or was granted it): no payment
             // step, and — below — no self-subscribe over the grant.
@@ -468,25 +508,13 @@ public struct SignupWithSubscriptionComponent: View {
                     }
                     collectedTransactionId = txnId
                     collectedPlanKey = planKey(tierId: tier.id, pricingId: pricing?.id)
-                    if let userId = client.session.userId {
-                        _ = await client.payment.linkTransactionToUser(externalTransactionId: txnId, userId: userId)
-                    }
+                    request.paymentTransactionId = txnId
                 }
             }
 
-            let activation = await SignupPlanRules.activatePlan(
-                tierId: tokenGrant == nil ? tier?.id : nil,
-                pricingId: pricing?.id,
-                tokenGrant: tokenGrant,
-                paymentTransactionId: collectedTransactionId,
-                selfSubscribe: { tierId, pricingId, transactionId in
-                    try await client.appTier.selfSubscribe(
-                        appId: resolvedAppId,
-                        appTierId: tierId,
-                        appTierPricingId: pricingId,
-                        paymentTransactionId: transactionId
-                    )
-                }
+            // Links the transaction to the new account and self-subscribes — never over a grant.
+            let activation = await SignupAccountCreator.activatePlan(
+                client: client, request: request, attempt: attempt
             )
 
             // A subscribe failure is non-fatal (JS parity): the account exists
@@ -529,46 +557,5 @@ public struct SignupWithSubscriptionComponent: View {
         }
     }
 
-    private func registerAndLogin(client: WildwoodClient, appId resolvedAppId: String) async throws -> AuthenticationResponse {
-        let request = RegistrationRequest(
-            email: email,
-            username: username.isEmpty ? email : username,
-            firstName: firstName,
-            lastName: lastName,
-            password: password,
-            appId: resolvedAppId,
-            platform: "ios",
-            deviceInfo: PlatformDetection.deviceInfo(),
-            registrationToken: registrationToken.isEmpty ? nil : registrationToken
-        )
-
-        // Register: token flow when a token was supplied, open flow otherwise.
-        var auth: AuthenticationResponse
-        if !registrationToken.isEmpty {
-            auth = try await client.auth.registerWithToken(request)
-        } else {
-            let result = try await client.auth.registerOpen(request)
-            guard result.success else {
-                throw WildwoodError(message: result.message, status: 0, code: .validationError)
-            }
-            auth = AuthenticationResponse(id: result.userId ?? "", userId: result.userId ?? "", email: email)
-        }
-
-        // Token-less registration → authenticate with the new credentials.
-        if auth.jwtToken.isEmpty {
-            auth = try await client.auth.login(
-                LoginRequest(
-                    username: username.isEmpty ? email : username,
-                    email: email,
-                    password: password,
-                    appId: resolvedAppId,
-                    platform: "ios",
-                    deviceInfo: PlatformDetection.deviceInfo()
-                )
-            )
-        }
-        client.session.login(auth)
-        return auth
-    }
 }
 #endif

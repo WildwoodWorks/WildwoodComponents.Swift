@@ -44,6 +44,18 @@ public final class WildwoodClient {
     public let theme: ThemeService
     public let events: WildwoodEventEmitter
 
+    /// How this app confirms a payment or card-setup intent — the app-wide seam the registration
+    /// and subscription flows read when nothing nearer supplies one.
+    ///
+    /// `nil` is the honest default and a supported state: with no handler nothing here ever tells
+    /// the server it can confirm an intent, asks for a SetupIntent, or collects a card for a pack
+    /// checkout, and an answer that needs a bank challenge is reported as not completed with the
+    /// "finish this purchase on the web" copy. See ``WildwoodPaymentActionHandler``.
+    ///
+    /// A SwiftUI host may instead scope one to a subtree with `.wildwoodPaymentActionHandler(_:)`,
+    /// or hand one straight to a component; the nearest wins.
+    public var paymentActionHandler: (any WildwoodPaymentActionHandler)? = nil
+
     public init(config: WildwoodConfig, urlSession: URLSession = .shared) {
         self.config = config
         let events = WildwoodEventEmitter()
