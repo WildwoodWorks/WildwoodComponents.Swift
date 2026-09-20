@@ -229,4 +229,66 @@ struct AuthServiceTests {
         #expect(!AuthService.checkPasswordRules("NoDigitsHere", config: config).isValid)
         #expect(AuthService.checkPasswordRules("GoodPass1", config: config).isValid)
     }
+
+    // MARK: - Registration token details (ported from the JS authService tests)
+
+    @Test func registrationTokenDetailsReturnsThePlansTheTokenGrants() async throws {
+        let (service, _, backend) = makeService()
+        let grants = """
+        {"isValid":true,"errorMessage":null,
+         "appGrants":[{"appId":"app-1","appTierId":"tier-pro","appTierName":"Pro",
+                       "addOnIds":[],"featureCodes":[]}]}
+        """
+        // `URL.path` is percent-decoded, so the decoded spelling is the key that matches; the
+        // escaped one is registered too so the stub cannot be the thing that fails here. What the
+        // request actually sent is asserted on `url` below.
+        backend.stub("GET", "/api/registrationtokens/validate-detailed/TOKEN 1", .init(json: grants))
+        backend.stub("GET", "/api/registrationtokens/validate-detailed/TOKEN%201", .init(json: grants))
+
+        let read = await service.getRegistrationTokenDetails(token: "TOKEN 1")
+        let details = try #require(read)
+
+        #expect(details.isValid == true)
+        #expect(details.errorMessage == nil)
+        #expect(details.appGrants.count == 1)
+        #expect(details.appGrants.first?.appTierId == "tier-pro")
+        let req = try #require(backend.requests().last { $0.method == "GET" })
+        // The token is one path segment: a space (and a '/') is escaped, not passed through.
+        #expect(req.url?.contains("api/registrationtokens/validate-detailed/TOKEN%201") == true)
+        #expect(req.query == nil)
+        // The route is anonymous — a token is validated before anyone is signed in.
+        #expect(req.headers["Authorization"] == nil)
+    }
+
+    @Test func registrationTokenDetailsScopesToOneAppWhenAsked() async throws {
+        let (service, _, backend) = makeService()
+        backend.stub("GET", "/api/registrationtokens/validate-detailed/T", .init(json: #"{"isValid":true}"#))
+
+        let read = await service.getRegistrationTokenDetails(token: "T", appId: "app-1")
+        let details = try #require(read)
+
+        // A server that sends no grants means a token with none, not a token that failed to read.
+        #expect(details.isValid == true)
+        #expect(details.appGrants.isEmpty)
+        let req = try #require(backend.requests().last { $0.method == "GET" })
+        #expect(req.query == "appId=app-1")
+    }
+
+    @Test func registrationTokenDetailsSeparatesUnreadableFromInvalid() async throws {
+        // Unreadable: an older server without the route (404) answers nil, NOT "invalid" — the
+        // caller falls back to the plain validity check instead of failing the registrant.
+        let (service, _, _) = makeService() // no stub → 404
+        #expect(await service.getRegistrationTokenDetails(token: "T") == nil)
+
+        // Invalid: the route answered, and its answer is that the token is no good.
+        let (service2, _, backend2) = makeService()
+        backend2.stub("GET", "/api/registrationtokens/validate-detailed/T", .init(json: """
+        {"isValid":false,"errorMessage":"That invitation has expired.","appGrants":[]}
+        """))
+
+        let read = await service2.getRegistrationTokenDetails(token: "T")
+        let details = try #require(read)
+        #expect(details.isValid == false)
+        #expect(details.errorMessage == "That invitation has expired.")
+    }
 }

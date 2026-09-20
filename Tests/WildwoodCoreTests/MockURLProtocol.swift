@@ -25,9 +25,17 @@ struct StubResponse {
 struct RecordedRequest: Sendable {
     var method: String
     var host: String
+    /// Percent-DECODED, because `URL.path` is — a test that cares about the escaping asserts on
+    /// ``url`` instead.
     var path: String
     var headers: [String: String]
     var body: Data?
+    /// The query string, without the leading `?` — nil when the URL had none. Stubs are keyed by
+    /// path alone, so this is the only place a test can assert a query flag (`?immediate=true`,
+    /// `?appId=…`) actually went up.
+    var query: String?
+    /// The full URL as sent, escaping intact.
+    var url: String?
 }
 
 /// Per-test stub registry bound to a unique host.
@@ -74,6 +82,7 @@ final class MockURLProtocol: URLProtocol {
         let method = request.httpMethod ?? "GET"
         let host = request.url?.host() ?? ""
         let path = request.url?.path ?? ""
+        let query = request.url?.query
 
         var bodyData = request.httpBody
         if bodyData == nil, let stream = request.httpBodyStream {
@@ -96,7 +105,17 @@ final class MockURLProtocol: URLProtocol {
             headers[key] = value
         }
         Self.recorded.withLock {
-            $0.append(RecordedRequest(method: method, host: host, path: path, headers: headers, body: bodyData))
+            $0.append(
+                RecordedRequest(
+                    method: method,
+                    host: host,
+                    path: path,
+                    headers: headers,
+                    body: bodyData,
+                    query: query,
+                    url: request.url?.absoluteString
+                )
+            )
         }
 
         if let code = Self.errors.withLock({ $0["\(method) \(host) \(path)"] }) {

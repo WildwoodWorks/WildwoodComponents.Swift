@@ -115,6 +115,77 @@ public final class AppTierService: Sendable {
         )
     }
 
+    /// Options form of the self-service tier change, for a caller that can finish a payment.
+    ///
+    /// With ``SelfChangeTierOptions/supportsPaymentAction`` set, a change whose proration needs
+    /// 3-D Secure comes back with `requiresAction`, a client secret and a `pendingChangeId` to
+    /// confirm and then ``completeTierChange(appId:pendingChangeId:)``, instead of being refused
+    /// outright.
+    ///
+    /// This overload is the ONLY form that sends `SupportsPaymentAction`: the positional
+    /// ``changeTier(appId:newTierId:newPricingId:immediate:paymentTransactionId:)`` posts exactly
+    /// what it always did, because an older server rejects an unknown property and a caller that
+    /// never opted into finishing a payment must not appear to have.
+    ///
+    /// Throws on an HTTP failure, like the positional form — unlike the structured actions below,
+    /// whose refusals are data.
+    public func changeTier(appId: String, options: SelfChangeTierOptions) async throws -> AppTierChangeResultModel {
+        // SelfChangeTierOptions' CodingKeys are the PascalCase names WildwoodAPI binds, so the
+        // options value IS the request body.
+        try await http.post("api/app-tiers/\(appId)/my-subscription/change", body: options)
+    }
+
+    /// Finish a plan change that came back `requiresAction`, once the prorated payment has been
+    /// confirmed. Safe to call repeatedly: the server asks the processor whether the invoice
+    /// really paid before it moves anything, and answers `processing` while it waits.
+    ///
+    /// IDIOM NOTE — this and the structured actions below are the one place in this package where
+    /// a service reports an HTTP failure as DATA instead of throwing (see
+    /// ``AppTierActionError/from(_:fallbackMessage:)``): a driver has to branch on WHY a change
+    /// was refused, and a thrown error flattens "that change lapsed" into "something failed".
+    /// Task cancellation is NOT a refusal and still propagates as `CancellationError`.
+    ///
+    /// `requiresAction` and `processing` arrive with `success == false` and mean "not yet", not
+    /// "refused" — they come back as data, untouched.
+    public func completeTierChange(appId: String, pendingChangeId: String) async throws -> AppTierChangeResultModel {
+        do {
+            let data: AppTierChangeResultModel? = try await http.post(
+                "api/app-tiers/\(appId)/my-subscription/change/\(encodePath(pendingChangeId))/complete"
+            )
+            // An empty 2xx body means the server had nothing to report about a change it accepted
+            // — the same reading ``cancelResult`` gives an empty cancellation response.
+            return data ?? AppTierChangeResultModel(success: true)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let actionError = AppTierActionError.from(error, fallbackMessage: "Failed to complete the plan change")
+            return AppTierChangeResultModel(
+                success: false,
+                errorMessage: actionError.message,
+                isScheduled: false,
+                errorCode: actionError.code
+            )
+        }
+    }
+
+    /// Whether this account may still start a free trial in the app — on a tier, and per add-on.
+    ///
+    /// Never reports an HTTP failure: it answers "eligible", which is what a signup screen
+    /// already shows from the catalog's trial days, and an empty `addOns` map means "unknown" for
+    /// the same reason. The checkout quote and the payment initiation re-decide authoritatively
+    /// before any money moves, so the worst a failed lookup does is advertise a trial the
+    /// checkout then prices in full. Cancellation still propagates.
+    public func trialEligibility(appId: String) async throws -> TrialEligibilityModel {
+        do {
+            let data: TrialEligibilityModel? = try await http.get("api/app-tiers/\(appId)/trial-eligibility")
+            return data ?? TrialEligibilityModel()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return TrialEligibilityModel()
+        }
+    }
+
     /// Admin tier change (requires Admin/CompanyAdmin role).
     public func changeTierAdvanced(
         appId: String,
@@ -221,12 +292,51 @@ public final class AppTierService: Sendable {
 
     // MARK: - Add-on subscription actions
 
-    public func subscribeToAddOn(
+    /// One structured pack/checkout call: 2xx with a body → the body; 2xx with no body → a
+    /// refusal (these endpoints' answer IS the result DTO, so nothing to report is not a
+    /// success); an HTTP/transport failure → the refusal the server described, filled in from
+    /// `empty` where it said nothing. Cancellation is rethrown, never folded into a refusal.
+    ///
+    /// `send` performs the request, keeping the endpoint literal at the verb call site for the
+    /// Sync parity script — the same shape ``cancelResult(_:)`` uses.
+    private func actionResult<T: Decodable & Sendable & AppTierRefusableResult>(
+        fallbackMessage: String,
+        empty: T,
+        send: () async throws -> T?
+    ) async throws -> T {
+        do {
+            guard let data = try await send() else {
+                return AppTierActionMapping.refusal(
+                    Self.emptyAnswer,
+                    fallbackMessage: fallbackMessage,
+                    empty: empty
+                )
+            }
+            return data
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return AppTierActionMapping.refusal(error, fallbackMessage: fallbackMessage, empty: empty)
+        }
+    }
+
+    /// A 2xx that carried no body at all, from an endpoint whose answer is the result DTO.
+    private static let emptyAnswer = WildwoodError(
+        message: "The server returned an empty response.",
+        status: 0,
+        code: .unknown
+    )
+
+    /// Subscribe to a single pack. Returns the created subscription, or a structured refusal — a
+    /// pack already owned, one bundled in the tier, and a payment the server would not accept are
+    /// all different problems a UI has to word differently. Reports an HTTP refusal as data;
+    /// cancellation still propagates.
+    public func subscribeToAddOnDetailed(
         appId: String,
         addOnId: String,
         pricingId: String? = nil,
         paymentTransactionId: String? = nil
-    ) async -> Bool {
+    ) async throws -> AddOnSubscribeResultModel {
         struct SubscribeAddOnDto: Encodable {
             let AppId: String
             let AppTierAddOnId: String
@@ -234,7 +344,7 @@ public final class AppTierService: Sendable {
             let PaymentTransactionId: String?
         }
         do {
-            try await http.postVoid(
+            let data: UserAddOnSubscriptionModel? = try await http.post(
                 "api/app-tier-addons/\(appId)/subscribe",
                 body: SubscribeAddOnDto(
                     AppId: appId,
@@ -243,19 +353,196 @@ public final class AppTierService: Sendable {
                     PaymentTransactionId: paymentTransactionId
                 )
             )
-            return true
+            return AddOnSubscribeResultModel(success: true, subscription: data)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            return false
+            return AddOnSubscribeResultModel(
+                success: false,
+                error: AppTierActionError.from(error, fallbackMessage: "Failed to subscribe to the pack")
+            )
         }
     }
 
-    public func cancelAddOnSubscription(subscriptionId: String) async -> Bool {
+    /// Cancel one of the calling user's own packs. By default access continues to the end of the
+    /// period already paid for (`isScheduled`); `immediate` ends it now. Reports an HTTP refusal
+    /// as data; cancellation still propagates.
+    public func cancelAddOnDetailed(
+        subscriptionId: String,
+        immediate: Bool = false
+    ) async throws -> AddOnSubscriptionCancelResultModel {
         do {
-            try await http.postVoid("api/app-tier-addons/subscriptions/\(subscriptionId)/cancel")
-            return true
+            // Bool interpolation writes lowercase true/false, byte-identical to the JS
+            // `?immediate=${immediate}`.
+            let data: AddOnSubscriptionCancelResultModel? = try await http.post(
+                "api/app-tier-addons/subscriptions/\(subscriptionId)/cancel?immediate=\(immediate)"
+            )
+            return AddOnSubscriptionCancelResultModel(
+                success: true,
+                isScheduled: data?.isScheduled,
+                status: data?.status,
+                effectiveDate: data?.effectiveDate
+            )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            return false
+            return AppTierActionMapping.refusal(
+                error,
+                fallbackMessage: "Failed to cancel the pack",
+                empty: AddOnSubscriptionCancelResultModel()
+            )
         }
+    }
+
+    /// Take back a scheduled cancellation: the provider stops cancelling at period end and the
+    /// pack goes back to Active (or Trialing while its trial runs). Reports an HTTP refusal as
+    /// data; cancellation still propagates.
+    public func reactivateAddOn(subscriptionId: String) async throws -> AddOnSubscriptionReactivateResultModel {
+        do {
+            let data: UserAddOnSubscriptionModel? = try await http.post(
+                "api/app-tier-addons/subscriptions/\(subscriptionId)/reactivate"
+            )
+            return AddOnSubscriptionReactivateResultModel(
+                success: true,
+                status: data?.status,
+                subscription: data
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return AppTierActionMapping.refusal(
+                error,
+                fallbackMessage: "Failed to reactivate the pack",
+                empty: AddOnSubscriptionReactivateResultModel()
+            )
+        }
+    }
+
+    @available(*, deprecated, message: "Use subscribeToAddOnDetailed(appId:addOnId:pricingId:paymentTransactionId:) — it reports WHY a subscription was refused, and returns the created subscription, instead of a bare false.")
+    public func subscribeToAddOn(
+        appId: String,
+        addOnId: String,
+        pricingId: String? = nil,
+        paymentTransactionId: String? = nil
+    ) async -> Bool {
+        // A cancelled task has no caller left to answer, so the Bool wrappers report false
+        // rather than growing a `throws` their existing callers never had.
+        let result = try? await subscribeToAddOnDetailed(
+            appId: appId,
+            addOnId: addOnId,
+            pricingId: pricingId,
+            paymentTransactionId: paymentTransactionId
+        )
+        return result?.success ?? false
+    }
+
+    @available(*, deprecated, message: "Use cancelAddOnDetailed(subscriptionId:immediate:) — it says whether access continues to the end of the period, and why a cancellation was refused.")
+    public func cancelAddOnSubscription(subscriptionId: String) async -> Bool {
+        // Delegating also means this now sends `?immediate=false` explicitly, as the JS
+        // deprecated wrapper does — the server's default, stated rather than assumed.
+        let result = try? await cancelAddOnDetailed(subscriptionId: subscriptionId)
+        return result?.success ?? false
+    }
+
+    // MARK: - Pack checkout (card once, any number of packs)
+
+    /// Price a basket of packs. Server-authoritative: the price, billing frequency, trial length
+    /// and trial eligibility of every line come from the catalog and the account, not from this
+    /// request. The returned `checkoutId` is echoed back on ``checkoutAddOns(appId:request:)``
+    /// and is what makes the purchase idempotent.
+    ///
+    /// Reports an HTTP refusal as data; cancellation still propagates. A refused quote priced
+    /// nothing, so its `currency` stays blank rather than inventing one.
+    public func quoteAddOnCheckout(
+        appId: String,
+        items: [AddOnCheckoutItemInput]
+    ) async throws -> AddOnCheckoutQuoteModel {
+        try await actionResult(
+            fallbackMessage: "Failed to price the packs",
+            empty: AddOnCheckoutQuoteModel()
+        ) {
+            let data: AddOnCheckoutQuoteModel? = try await self.http.post(
+                "api/app-tier-addons/\(appId)/checkout/quote",
+                body: AddOnCheckoutQuoteRequestModel(items: items)
+            )
+            return data
+        }
+    }
+
+    /// Start the one-off card entry for an account with no card on file. Confirm the returned
+    /// `clientSecret`, then pass `paymentTransactionId` to ``checkoutAddOns(appId:request:)``.
+    /// Reports an HTTP refusal as data; cancellation still propagates.
+    public func createCheckoutPaymentMethod(
+        appId: String,
+        providerId: String
+    ) async throws -> AddOnCheckoutPaymentMethodModel {
+        try await actionResult(
+            fallbackMessage: "Failed to start card collection",
+            empty: AddOnCheckoutPaymentMethodModel()
+        ) {
+            let data: AddOnCheckoutPaymentMethodModel? = try await self.http.post(
+                "api/app-tier-addons/\(appId)/checkout/payment-method",
+                body: AddOnCheckoutPaymentMethodRequestModel(providerId: providerId)
+            )
+            return data
+        }
+    }
+
+    /// Buy the basket: one subscription per pack, charged to one card. One pack failing does not
+    /// stop the others, so read `results` per pack rather than `success` alone — a
+    /// `requires_action` line still has to be authenticated and then
+    /// ``completeAddOnCheckout(appId:paymentTransactionId:)``d. Reports an HTTP refusal as data
+    /// (keeping the checkout id it was about); cancellation still propagates.
+    public func checkoutAddOns(
+        appId: String,
+        request: AddOnCheckoutRequestModel
+    ) async throws -> AddOnCheckoutResultModel {
+        try await actionResult(
+            fallbackMessage: "Failed to buy the packs",
+            empty: AddOnCheckoutResultModel(checkoutId: request.checkoutId)
+        ) {
+            // AddOnCheckoutRequestModel's CodingKeys are the PascalCase names the endpoint binds,
+            // and `useSavedCard` is a non-optional Bool, so it always goes up (false by default).
+            let data: AddOnCheckoutResultModel? = try await self.http.post(
+                "api/app-tier-addons/\(appId)/checkout",
+                body: request
+            )
+            return data
+        }
+    }
+
+    /// Finish one pack whose card the customer has just authenticated: the payment is verified
+    /// with the provider and, once it really paid, the pack's subscription is created.
+    ///
+    /// Reports an HTTP refusal as data; cancellation still propagates. A refusal here IS the
+    /// per-item result DTO (the controller returns it with the 400/404), so the pack it was about
+    /// is kept rather than answering about nothing.
+    public func completeAddOnCheckout(
+        appId: String,
+        paymentTransactionId: String
+    ) async throws -> AddOnCheckoutItemResultModel {
+        do {
+            let data: AddOnCheckoutItemResultModel? = try await http.post(
+                "api/app-tier-addons/\(appId)/checkout/complete",
+                body: AddOnCheckoutCompleteRequestModel(paymentTransactionId: paymentTransactionId)
+            )
+            guard let data else { return Self.failedItem(Self.emptyAnswer) }
+            return data
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return Self.failedItem(error)
+        }
+    }
+
+    private static func failedItem(_ error: any Error) -> AddOnCheckoutItemResultModel {
+        let actionError = AppTierActionError.from(error, fallbackMessage: "Failed to complete the pack purchase")
+        var result = AppTierActionMapping.refusalItemBody(error, as: AddOnCheckoutItemResultModel.self)
+            ?? AddOnCheckoutItemResultModel()
+        result.status = AddOnCheckoutItemStatuses.failed
+        result.errorCode = actionError.code
+        result.errorMessage = actionError.message
+        return result
     }
 
     // MARK: - Usage tracking

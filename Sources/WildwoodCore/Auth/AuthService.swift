@@ -379,6 +379,32 @@ public final class AuthService: Sendable {
         return data ?? false
     }
 
+    /// What a registration token grants — the tier, its pricing, the packs and the features, per
+    /// app — from the server's detailed token validation, optionally scoped to one app.
+    ///
+    /// Returns nil when the details cannot be READ: a server older than this route, a 404, a
+    /// transport failure, or a body that will not decode. That is NOT the same as an invalid
+    /// token, and callers must not report it as one — they fall back to
+    /// ``validateRegistrationToken(_:)``. An INVALID token comes back as details with
+    /// `isValid == false` and the server's own message.
+    public func getRegistrationTokenDetails(
+        token: String,
+        appId: String? = nil
+    ) async -> RegistrationTokenDetails? {
+        // encodeURIComponent semantics for both: a token is a single path segment (a '/' in it
+        // must not open a new one), and the appId is a query value.
+        let encodedToken = WildwoodURL.queryComponent(token)
+        var appQuery = ""
+        if let appId, !appId.isEmpty {
+            appQuery = "?appId=\(WildwoodURL.queryComponent(appId))"
+        }
+        let data: RegistrationTokenDetails? = try? await http.get(
+            "api/registrationtokens/validate-detailed/\(encodedToken)\(appQuery)",
+            skipAuth: true
+        )
+        return data
+    }
+
     // MARK: - Logout / refresh
 
     public func logout() async {

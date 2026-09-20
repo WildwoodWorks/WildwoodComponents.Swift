@@ -172,6 +172,52 @@ struct PaymentServiceTests {
         #expect(body["isRestore"] as? Bool == true)
     }
 
+    // The one PascalCase key in an otherwise camelCase request body: the app's payment
+    // configuration can require a billing address, and every stack posts it as `BillingAddress`.
+    // Omitted entirely when there is none — an older server must not see a null it cannot bind.
+    @Test func initiatePaymentSendsBillingAddressPascalCasedAndOmitsItWhenAbsent() async throws {
+        let (service, backend) = makeService()
+        backend.stub("POST", "/api/payment/initiate", .init(json: #"{"success":true}"#))
+
+        _ = try await service.initiatePayment(
+            InitiatePaymentRequest(
+                providerId: "prov-1",
+                appId: "app-1",
+                amount: 19,
+                currency: "USD",
+                billingAddress: BillingAddress(
+                    firstName: "Ada",
+                    lastName: "Lovelace",
+                    street: "1 Analytical Way",
+                    city: "London",
+                    state: "",
+                    zipCode: "N1",
+                    country: "GB"
+                ),
+                supportsSetupIntent: true
+            )
+        )
+
+        let req = try #require(backend.requests().last { $0.path == "/api/payment/initiate" })
+        let body = try jsonBody(req)
+        #expect(body["providerId"] as? String == "prov-1")
+        #expect(body["supportsSetupIntent"] as? Bool == true)
+        let address = try #require(body["BillingAddress"] as? [String: Any])
+        // The address's OWN properties stay camelCase — only the property it hangs off is renamed.
+        #expect(address["firstName"] as? String == "Ada")
+        #expect(address["zipCode"] as? String == "N1")
+        #expect(address["country"] as? String == "GB")
+
+        let (service2, backend2) = makeService()
+        backend2.stub("POST", "/api/payment/initiate", .init(json: #"{"success":true}"#))
+        _ = try await service2.initiatePayment(
+            InitiatePaymentRequest(providerId: "prov-1", appId: "app-1", amount: 19)
+        )
+        let plain = try jsonBody(try #require(backend2.requests().last { $0.path == "/api/payment/initiate" }))
+        #expect(plain.keys.contains("BillingAddress") == false)
+        #expect(plain.keys.contains("supportsSetupIntent") == false)
+    }
+
     @Test func validateStorePurchaseThrowsOnFailure() async {
         let (service, _) = makeService() // no stub → 404
         await #expect(throws: WildwoodError.self) {
