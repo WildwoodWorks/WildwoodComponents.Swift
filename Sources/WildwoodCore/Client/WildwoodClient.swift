@@ -34,8 +34,10 @@ public final class WildwoodClient {
     public let features: FeatureStore
     @ObservationIgnored public let feedback: FeedbackService
     @ObservationIgnored public let consent: ConsentService
-    /// Campaign Attribution: capture from `.onOpenURL`, then pass `getForRegistration()` in RegistrationRequest.
-    @ObservationIgnored public let attribution: AttributionService
+    /// Campaign Attribution: started by `initialize()`, fed by `.onOpenURL` (the
+    /// `.wildwoodClient(_:)` modifier wires both), and attached to every registration
+    /// automatically. Observable, so a view can read `first`/`last`/`persisted`.
+    public let attribution: AttributionService
     public let theme: ThemeService
     public let events: WildwoodEventEmitter
 
@@ -68,19 +70,46 @@ public final class WildwoodClient {
         self.feedback = FeedbackService(http: http, defaultAppId: config.appId ?? "")
         let consent = ConsentService(http: http, storage: storage, defaultAppId: config.appId ?? "")
         self.consent = consent
-        self.attribution = AttributionService(http: http, storage: storage, consent: consent, defaultAppId: config.appId ?? "")
+        let attribution = AttributionService(
+            http: http,
+            storage: storage,
+            consent: consent,
+            defaultAppId: config.appId ?? "",
+            platform: config.attributionPlatform ?? AttributionService.defaultPlatform,
+            events: events,
+            enabled: config.attributionEnabled
+        )
+        self.attribution = attribution
         self.theme = ThemeService(storage: storage, events: events)
+
+        // Registration paths carry the captured campaign touches and clear them after a recorded
+        // signup; a provider sign-in claims them for the new account. Closures rather than a
+        // reference: AttributionService is main-actor isolated and AuthService is not, so the hop
+        // is explicit (JS: `auth.setAttributionProvider(attribution)`).
+        auth.setAttributionProvider(
+            AttributionRegistrationSource(
+                payload: { await attribution.getForRegistration() },
+                clear: { await attribution.clear() }
+            )
+        )
     }
 
-    /// Restore the persisted session and theme. Call once at app launch
-    /// (the SwiftUI `wildwoodClient(_:)` modifier does this automatically).
+    /// Restore the persisted session and theme, and start Campaign Attribution (load the app's
+    /// attribution config, restore persisted touches). Call once at app launch (the SwiftUI
+    /// `wildwoodClient(_:)` modifier does this automatically, and also captures opened URLs).
+    ///
+    /// Ordering note: consent may not be initialized yet when this runs. That is fine — the
+    /// touches stay in memory and the attribution engine's consent subscription re-applies the
+    /// persistence gate as soon as `consent.initialize()` (or a decision) reports a state.
     public func initialize() async {
         theme.initialize()
         await session.initialize()
+        await attribution.initialize()
     }
 
     public func dispose() {
         session.dispose()
+        attribution.dispose()
         events.removeAllListeners()
     }
 }

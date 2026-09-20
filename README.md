@@ -52,6 +52,26 @@ struct MyApp: App {
 }
 ```
 
+## Campaign attribution
+
+`.wildwoodClient(_:)` starts attribution (`client.attribution.initialize()`) and captures every URL
+the app opens, so deep links and universal links carrying `utm_*` tags or an ad click id become the
+visitor's first/last touch. Registration then carries the payload automatically and drops it once
+the signup is recorded; a provider sign-in (Sign in with Apple, Google) claims the touches for the
+new account instead.
+
+Injecting the client by hand? Add the capture modifier yourself, once:
+
+```swift
+ContentView()
+    .environment(\.wildwoodClient, client)
+    .wildwoodAttributionCapture(client)   // or: .onOpenURL { client.attribution.capture(url: $0) }
+```
+
+Touches are persisted only after the app's consent category (Analytics by default) is granted —
+`ConsentService` decisions re-apply that gate on their own. Set
+`WildwoodConfig(attributionEnabled: false)` to turn the whole engine off.
+
 ## Test suite
 
 `WildwoodComponentsTestSuite.iOS/` is an XcodeGen-defined iOS app with one test screen per

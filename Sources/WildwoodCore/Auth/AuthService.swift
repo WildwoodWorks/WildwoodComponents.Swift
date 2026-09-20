@@ -18,6 +18,26 @@ public final class AuthService: Sendable {
 
     private let callbacks = Mutex(Callbacks())
 
+    /// How long a queued attribution claim stays valid, matching `@wildwood/core`'s
+    /// `ATTRIBUTION_CLAIM_WINDOW_MS` and the server's window: WildwoodAPI refuses a claim for an
+    /// account created longer ago than this.
+    private static let attributionClaimWindow: TimeInterval = 15 * 60
+
+    /// The claim waiting for a signed-in session, with the moment it was queued.
+    private struct QueuedAttributionClaim: Sendable {
+        var appId: String
+        var queuedAt: Date
+    }
+
+    private struct AttributionWiring: Sendable {
+        var source: AttributionRegistrationSource?
+        var queuedClaim: QueuedAttributionClaim?
+        /// Injectable clock for deterministic tests (mirrors `SessionManager.now`).
+        var now: @Sendable () -> Date = { Date() }
+    }
+
+    private let attributionWiring = Mutex(AttributionWiring())
+
     public init(
         http: WildwoodHttpClient,
         storage: any WildwoodStorageAdapter,
@@ -38,6 +58,101 @@ public final class AuthService: Sendable {
     /// Register a callback for logout (used by SessionManager).
     public func setLogoutHandler(_ handler: @escaping @Sendable () -> Void) {
         callbacks.withLock { $0.onLogout = handler }
+    }
+
+    // MARK: - Campaign Attribution
+
+    /// Wire the Campaign Attribution engine (`client.attribution`). Every registration path then
+    /// carries the captured touches automatically and clears them after a recorded signup, and a
+    /// provider sign-in claims them for the new account. `WildwoodClient` does this for you.
+    public func setAttributionProvider(_ source: AttributionRegistrationSource?) {
+        attributionWiring.withLock { $0.source = source }
+    }
+
+    /// Test seam: the clock the 15-minute claim window is measured against.
+    func setAttributionClock(_ clock: @escaping @Sendable () -> Date) {
+        attributionWiring.withLock { $0.now = clock }
+    }
+
+    /// The caller's payload when there is one, otherwise the engine's captured payload. Mirrors
+    /// `@wildwood/core`'s `resolveAttribution`: an explicit value always wins, so a component that
+    /// attaches the payload itself is not double-resolved. (JS distinguishes `undefined` from
+    /// `null`; Swift has one `nil`, so "send none" is expressed by leaving attribution unwired or
+    /// clearing it — same choice the .NET SDK made.)
+    private func resolveAttribution(_ explicit: AttributionPayload?) async -> AttributionPayload? {
+        if let explicit { return explicit }
+        guard let source = attributionWiring.withLock({ $0.source }) else { return nil }
+        return await source.payload()
+    }
+
+    /// Drops the captured touches after a recorded signup, so a second signup on this device does
+    /// not reuse them. Best-effort: attribution is measurement and must never cost a signup.
+    private func clearAttribution() async {
+        guard let source = attributionWiring.withLock({ $0.source }) else { return }
+        await source.clear()
+    }
+
+    /// Claims the captured campaign touches for the signed-in user's just-created account
+    /// (`POST api/attribution/claim?appId=`), for provider signups that have no registration
+    /// request to carry them. Never throws: returns nil when nothing was sent or the request
+    /// failed, and clears the local touches after any successful response, since the server has
+    /// then decided either way.
+    @discardableResult
+    public func claimAttribution(appId: String) async -> AttributionClaimResponse? {
+        guard !appId.isEmpty else { return nil }
+        guard let payload = await resolveAttribution(nil) else { return nil }
+
+        let body = AttributionClaimRequest(appId: appId, payload: payload)
+        do {
+            // appId rides in the query string too: the server's rate-limit partition reads it, and
+            // it must match the body.
+            let data: AttributionClaimResponse = try await http.post(
+                "api/attribution/claim?appId=\(WildwoodURL.queryComponent(appId))",
+                body: body
+            )
+            await clearAttribution()
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    /// Queues a campaign-attribution claim for the next auth change that carries a token, i.e.
+    /// once a session is signed in. Provider sign-ins use it because two-factor, a forced password
+    /// reset or pending disclaimers can defer the session, and a claim sent before the session
+    /// exists would 401. A sign-out drops the queued claim, and it lapses after the server's
+    /// claim window.
+    public func queueAttributionClaim(appId: String) {
+        attributionWiring.withLock {
+            $0.queuedClaim = appId.isEmpty ? nil : QueuedAttributionClaim(appId: appId, queuedAt: $0.now())
+        }
+    }
+
+    /// Announces an auth change and then sends a queued attribution claim if the change carries a
+    /// session — the Swift stand-in for the `authChanged` subscription `@wildwood/core` uses.
+    private func emitAuthChanged(_ response: AuthenticationResponse?) async {
+        await events.emit(.authChanged(response))
+        await sendQueuedAttributionClaim(response)
+    }
+
+    private func sendQueuedAttributionClaim(_ response: AuthenticationResponse?) async {
+        // A token-less response (two-factor still pending, or a registration that returned no
+        // tokens) is not a signed-in session yet: keep the claim queued.
+        if let response, response.jwtToken.isEmpty { return }
+
+        // Claimed at most once per queue, whatever happens below.
+        let queued = attributionWiring.withLock { wiring -> QueuedAttributionClaim? in
+            let pending = wiring.queuedClaim
+            wiring.queuedClaim = nil
+            return pending
+        }
+        // A sign-out (nil response) drops the claim without sending it.
+        guard let queued, let response, !response.jwtToken.isEmpty else { return }
+        // A stale claim lapses with the server's claim window.
+        let elapsed = attributionWiring.withLock { $0.now() }.timeIntervalSince(queued.queuedAt)
+        guard elapsed <= Self.attributionClaimWindow else { return }
+
+        await claimAttribution(appId: queued.appId)
     }
 
     // MARK: - Login
@@ -73,6 +188,14 @@ public final class AuthService: Sendable {
 
         let data: AuthenticationResponse = try await http.post("api/auth/login", body: dto, skipAuth: true)
 
+        // A provider sign-in may have just created the account, and a provider signup has no
+        // registration request to carry the campaign touches. Queue a claim: it goes out on the
+        // next signed-in auth change — the one below, or the one two-factor verification makes.
+        if let providerToken = request.providerToken, !providerToken.isEmpty,
+           let appId = request.appId, !appId.isEmpty {
+            queueAttributionClaim(appId: appId)
+        }
+
         // If 2FA is required, return without storing auth.
         if data.requiresTwoFactor {
             return data
@@ -80,7 +203,7 @@ public final class AuthService: Sendable {
 
         storeAuthentication(data)
         notifyAuthChanged(data)
-        await events.emit(.authChanged(data))
+        await emitAuthChanged(data)
         return data
     }
 
@@ -89,13 +212,18 @@ public final class AuthService: Sendable {
     public func register(_ request: RegistrationRequest) async throws -> AuthenticationResponse {
         var dto = request
         dto.confirmPassword = request.confirmPassword ?? request.password
+        // Every registration path carries the captured campaign touches unless the caller supplied
+        // a payload of its own (JS: `resolveAttribution`).
+        dto.attribution = await resolveAttribution(request.attribution)
 
         let data: AuthenticationResponse = try await http.post("api/auth/register", body: dto, skipAuth: true)
 
         if !data.jwtToken.isEmpty {
             storeAuthentication(data)
             notifyAuthChanged(data)
-            await events.emit(.authChanged(data))
+            await emitAuthChanged(data)
+            // Recorded with the account: a second signup on this device must not reuse the touches.
+            await clearAttribution()
         }
         return data
     }
@@ -118,6 +246,7 @@ public final class AuthService: Sendable {
             let Attribution: AttributionPayload?
         }
 
+        let attribution = await resolveAttribution(request.attribution)
         let dto = TokenRegistrationDto(
             Token: request.registrationToken,
             Username: request.username ?? request.email,
@@ -128,7 +257,7 @@ public final class AuthService: Sendable {
             AppId: request.appId,
             Platform: request.platform,
             DeviceInfo: request.deviceInfo,
-            Attribution: request.attribution
+            Attribution: attribution
         )
 
         let raw = try await http.postData("api/userregistration/register-with-token", body: dto, skipAuth: true)
@@ -137,7 +266,8 @@ public final class AuthService: Sendable {
         if !data.jwtToken.isEmpty {
             storeAuthentication(data)
             notifyAuthChanged(data)
-            await events.emit(.authChanged(data))
+            await emitAuthChanged(data)
+            await clearAttribution()
             return data
         }
 
@@ -152,6 +282,8 @@ public final class AuthService: Sendable {
         if outcome.success == false {
             throw WildwoodError(message: outcome.message ?? "Registration failed.", status: 0, code: .validationError)
         }
+        // A token-less success is still a recorded signup: the server took the payload.
+        await clearAttribution()
 
         return AuthenticationResponse(
             id: outcome.userId ?? "",
@@ -178,6 +310,7 @@ public final class AuthService: Sendable {
             let Attribution: AttributionPayload?
         }
 
+        let attribution = await resolveAttribution(request.attribution)
         let dto = OpenRegistrationDto(
             Username: request.username ?? request.email,
             Email: request.email,
@@ -188,10 +321,14 @@ public final class AuthService: Sendable {
             Platform: request.platform,
             DeviceInfo: request.deviceInfo,
             PricingModelId: pricingModelId,
-            Attribution: request.attribution
+            Attribution: attribution
         )
 
-        return try await http.post("api/userregistration/register", body: dto, skipAuth: true)
+        let result: OpenRegistrationResult = try await http.post("api/userregistration/register", body: dto, skipAuth: true)
+        if result.success {
+            await clearAttribution()
+        }
+        return result
     }
 
     public func validateRegistration(_ request: ValidateRegistrationRequest) async throws -> ValidateRegistrationResponse {
@@ -417,7 +554,8 @@ public final class AuthService: Sendable {
         }
         clearAuthentication()
         notifyLogout()
-        await events.emit(.authChanged(nil))
+        // Signing out also drops any queued attribution claim.
+        await emitAuthChanged(nil)
     }
 
     public func refreshToken() async -> Bool {
@@ -487,7 +625,7 @@ public final class AuthService: Sendable {
         let data: AuthenticationResponse = try await http.post("api/webauthn/authenticate", body: dto)
         storeAuthentication(data)
         notifyAuthChanged(data)
-        await events.emit(.authChanged(data))
+        await emitAuthChanged(data)
         return data
     }
 
@@ -535,7 +673,7 @@ public final class AuthService: Sendable {
             if data.success, let authResponse = data.authResponse {
                 storeAuthentication(authResponse)
                 notifyAuthChanged(authResponse)
-                await events.emit(.authChanged(authResponse))
+                await emitAuthChanged(authResponse)
             }
             return data
         } catch {
@@ -558,7 +696,7 @@ public final class AuthService: Sendable {
             if data.success, let authResponse = data.authResponse {
                 storeAuthentication(authResponse)
                 notifyAuthChanged(authResponse)
-                await events.emit(.authChanged(authResponse))
+                await emitAuthChanged(authResponse)
             }
             return data
         } catch {

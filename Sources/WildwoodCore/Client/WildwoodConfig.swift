@@ -33,6 +33,14 @@ public struct WildwoodConfig: Sendable {
     public var slidingExpiration: Bool
     /// Storage backing (default `.composite`: tokens in Keychain, rest in UserDefaults).
     public var storage: WildwoodStorageOption
+    /// Campaign Attribution kill switch (default true), the Swift analog of the JS SDK's
+    /// `WildwoodConfig.attribution.enabled`. When false the engine captures nothing, persists
+    /// nothing, beacons nothing and hands registration no payload — the app's attribution config
+    /// is not even fetched.
+    public var attributionEnabled: Bool
+    /// Platform reported in attribution payloads (`web`/`ios`/`android`/`unknown`). Defaults to
+    /// the host OS (`ios` on iOS/visionOS, else `unknown`).
+    public var attributionPlatform: String?
 
     public init(
         baseUrl: String,
@@ -46,7 +54,9 @@ public struct WildwoodConfig: Sendable {
         sessionExpirationMinutes: Int = 60,
         enableAutoTokenRefresh: Bool = false,
         slidingExpiration: Bool = true,
-        storage: WildwoodStorageOption = .composite
+        storage: WildwoodStorageOption = .composite,
+        attributionEnabled: Bool = true,
+        attributionPlatform: String? = nil
     ) {
         self.baseUrl = baseUrl
         self.apiKey = apiKey
@@ -60,6 +70,8 @@ public struct WildwoodConfig: Sendable {
         self.enableAutoTokenRefresh = enableAutoTokenRefresh
         self.slidingExpiration = slidingExpiration
         self.storage = storage
+        self.attributionEnabled = attributionEnabled
+        self.attributionPlatform = attributionPlatform
     }
 
     public init(baseURL: URL, appId: String? = nil) {

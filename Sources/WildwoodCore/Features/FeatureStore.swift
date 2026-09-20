@@ -32,6 +32,7 @@ public final class FeatureStore {
     @ObservationIgnored private let appTier: AppTierService
     @ObservationIgnored private let defaultAppId: String?
     @ObservationIgnored private let ttl: Duration
+    @ObservationIgnored private let events: WildwoodEventEmitter?
     @ObservationIgnored private var authSubscription: WildwoodSubscription?
 
     /// Per-appId cache. Observable (not ignored) so views reading through
@@ -61,6 +62,7 @@ public final class FeatureStore {
         self.appTier = appTier
         self.defaultAppId = defaultAppId
         self.ttl = ttl
+        self.events = events
         if let events {
             authSubscription = events.on { [weak self] event in
                 switch event {
@@ -154,6 +156,22 @@ public final class FeatureStore {
     public func invalidate() {
         entries.removeAll()
         epoch += 1
+    }
+
+    /// `invalidate()` plus the `entitlementsChanged` signal — the Swift analog of
+    /// react-shared's `wrapMutation(reason, appId, fn)`, which invalidates the feature cache and
+    /// THEN emits. Call this (not `invalidate()`) after an entitlement mutation so surfaces that
+    /// cannot see the store — a subscription screen, the host app's own state — can re-read too.
+    ///
+    /// Invalidation stays LAZY: clear + epoch bump, never an eager refetch. The store deliberately
+    /// does not listen for its own event (that would double-bump the epoch).
+    public func invalidateEntitlements(
+        appId: String? = nil,
+        reason: EntitlementsChangedReason = .manual
+    ) {
+        invalidate()
+        guard let events else { return }
+        events.emit(.entitlementsChanged(appId: resolve(appId) ?? "", reason: reason))
     }
 
     /// Logout-time clear: the cached maps are dropped like invalidate(), but

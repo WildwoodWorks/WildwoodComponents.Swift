@@ -4,6 +4,8 @@
 
 import Foundation
 
+/// The events the SDK raises. Adding a case is source-breaking for a host that switches
+/// exhaustively over this enum — handle unknown events with a `default:` clause.
 public enum WildwoodEvent: Sendable {
     case authChanged(AuthenticationResponse?)
     /// Emitted once initialization completes; payload is `isAuthenticated`.
@@ -11,6 +13,13 @@ public enum WildwoodEvent: Sendable {
     case sessionExpired
     case tokenRefreshed(String)
     case themeChanged(String)
+    /// An entitlement mutation landed (tier change, cancel, add-on, override …): re-read the
+    /// subscription and the feature map. A SIGNAL to refresh, not proof the change has
+    /// propagated — emitted by `FeatureStore.invalidateEntitlements(appId:reason:)`.
+    case entitlementsChanged(appId: String, reason: EntitlementsChangedReason)
+    /// A campaign touch was captured from a deep link or universal link
+    /// (`AttributionService.capture(url:referrer:)`).
+    case attributionCaptured(AttributionTouch)
     case error(service: String, message: String)
 }
 

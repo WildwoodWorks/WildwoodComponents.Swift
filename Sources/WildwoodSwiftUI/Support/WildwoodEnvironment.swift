@@ -10,16 +10,32 @@ public extension EnvironmentValues {
 }
 
 public extension View {
-    /// Inject a WildwoodClient, initialize it (session restore, theme load) on
-    /// first appearance, and apply the client's current theme
-    /// (`WildwoodTheme.named(client.theme.theme)`) to the subtree — live, since
-    /// ThemeService is @Observable — unless the host pinned one with `.wildwoodTheme(_:)`.
+    /// Inject a WildwoodClient, initialize it (session restore, theme load, Campaign Attribution
+    /// start) on first appearance, capture campaign touches from every opened URL, and apply the
+    /// client's current theme (`WildwoodTheme.named(client.theme.theme)`) to the subtree — live,
+    /// since ThemeService is @Observable — unless the host pinned one with `.wildwoodTheme(_:)`.
     func wildwoodClient(_ client: WildwoodClient) -> some View {
         environment(\.wildwoodClient, client)
             .modifier(WildwoodServiceThemeModifier(client: client))
+            .wildwoodAttributionCapture(client)
             .task {
                 await client.initialize()
             }
+    }
+
+    /// Feed deep links and universal links to Campaign Attribution — the native stand-in for the
+    /// web SDK's landing-URL read, and the same wiring the React Native provider does with
+    /// `Linking`. `.wildwoodClient(_:)` applies this for you; apply it yourself only when the
+    /// client is injected some other way, and apply it once (a second copy would re-capture the
+    /// same URL). Attribution off (`WildwoodConfig.attributionEnabled == false`) makes it a no-op.
+    func wildwoodAttributionCapture(_ client: WildwoodClient) -> some View {
+        onOpenURL { url in
+            // Hop explicitly: AttributionService is main-actor isolated, and the delivery
+            // closure's isolation is SwiftUI's business, not ours.
+            Task { @MainActor in
+                _ = client.attribution.capture(url: url)
+            }
+        }
     }
 }
 

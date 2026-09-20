@@ -3,25 +3,38 @@
 // links, keeps a first and a last touch, persists them only once the app's consent category is granted,
 // beacons the landing when the app has the beacon on, and hands the payload to registration.
 //
-// Usage:
-//   .onOpenURL { url in client.attribution.capture(url: url) }
-//   var request = RegistrationRequest(..., attribution: client.attribution.getForRegistration())
-//   // after a successful signup: client.attribution.clear()
+// Usage: `.wildwoodClient(_:)` calls `initialize()` and captures every opened URL for you. A host
+// that wires the client by hand does:
+//   await client.attribution.initialize()
+//   .onOpenURL { url in client.attribution.capture(url: url) }   // or .wildwoodAttributionCapture(client)
+// Registration carries the payload automatically (AuthService.setAttributionProvider, wired by
+// WildwoodClient) and clears the touches after a successful signup; pass an explicit
+// `RegistrationRequest.attribution` only to override that.
 //
-// ConsentService has no change stream, so call `consentDidChange()` after the visitor's consent decision
-// to persist (or remove) the touches. Nothing here throws.
+// Persistence follows consent: the service subscribes to ConsentService's change hook, so accepting
+// Analytics later persists the touches and declining removes them. `consentDidChange()` remains for
+// a host that runs its own consent engine. Nothing here throws.
+//
+// @Observable so SwiftUI re-renders on `first`/`last`/`persisted` — the idiomatic `useAttribution`.
 
 import Foundation
+import Observation
 
 @MainActor
+@Observable
 public final class AttributionService {
-    private let http: WildwoodHttpClient
-    private let storage: any WildwoodStorageAdapter
-    private let consent: ConsentService
-    private let platform: String
-    private var appId: String
-    private var initialized = false
-    private var beaconed = Set<String>()
+    @ObservationIgnored private let http: WildwoodHttpClient
+    @ObservationIgnored private let storage: any WildwoodStorageAdapter
+    @ObservationIgnored private let consent: ConsentService
+    @ObservationIgnored private let events: WildwoodEventEmitter?
+    @ObservationIgnored private let platform: String
+    /// Host kill switch (`WildwoodConfig.attributionEnabled`). When false nothing is captured,
+    /// persisted, beaconed or handed to registration — the app-level config is never even fetched.
+    @ObservationIgnored private let enabled: Bool
+    @ObservationIgnored private var appId: String
+    @ObservationIgnored private var initialized = false
+    @ObservationIgnored private var beaconed = Set<String>()
+    @ObservationIgnored private var consentSubscription: WildwoodSubscription?
 
     public private(set) var config: PublicAttributionConfig?
     public private(set) var visitorKey: String
@@ -43,13 +56,17 @@ public final class AttributionService {
         storage: any WildwoodStorageAdapter,
         consent: ConsentService,
         defaultAppId: String,
-        platform: String = AttributionService.defaultPlatform
+        platform: String = AttributionService.defaultPlatform,
+        events: WildwoodEventEmitter? = nil,
+        enabled: Bool = true
     ) {
         self.http = http
         self.storage = storage
         self.consent = consent
+        self.events = events
         self.appId = defaultAppId
         self.platform = platform
+        self.enabled = enabled
         self.visitorKey = UUID().uuidString.lowercased()
     }
 
@@ -61,6 +78,7 @@ public final class AttributionService {
     /// at launch; later calls only re-apply the consent gate. Never throws.
     @discardableResult
     public func initialize(appId: String? = nil) async -> AttributionState {
+        guard enabled else { return state }
         if let appId, !appId.isEmpty { self.appId = appId }
         if initialized {
             persistIfAllowed()
@@ -98,6 +116,7 @@ public final class AttributionService {
     /// nil for a direct visit, which never overwrites the stored touches.
     @discardableResult
     public func capture(url: URL, referrer: URL? = nil) -> AttributionTouch? {
+        guard enabled else { return nil }
         if let config, !config.isEnabled { return nil }
         let now = Date()
         guard let touch = AttributionRules.parseTouch(
@@ -116,12 +135,14 @@ public final class AttributionService {
         last = touch
         if first == nil { first = touch }
         persistIfAllowed()
+        events?.emit(.attributionCaptured(touch))
         beacon(touch)
         return touch
     }
 
     /// The payload for `RegistrationRequest.attribution`, or nil when attribution is off or nothing was captured.
     public func getForRegistration() -> AttributionPayload? {
+        guard enabled else { return nil }
         if let config, !config.isEnabled { return nil }
         guard first != nil || last != nil else { return nil }
         return AttributionPayload(visitorKey: visitorKey, firstTouch: first, lastTouch: last, platform: platform)
@@ -135,9 +156,18 @@ public final class AttributionService {
         storage.removeItem(WildwoodStorageKeys.attribution)
     }
 
-    /// Re-applies the consent gate. Call after the visitor accepts, rejects or withdraws consent.
+    /// Re-applies the consent gate. Called automatically for `ConsentService` decisions (the
+    /// service subscribes to its change hook); call it by hand only with a host consent engine.
     public func consentDidChange() {
+        guard enabled else { return }
         persistIfAllowed()
+    }
+
+    /// Stops listening for consent changes. State is kept; a later `initialize()` re-arms the
+    /// listener. `WildwoodClient.dispose()` calls this.
+    public func dispose() {
+        consentSubscription?.cancel()
+        consentSubscription = nil
     }
 
     // MARK: - Private
@@ -161,6 +191,7 @@ public final class AttributionService {
     }
 
     private func persistIfAllowed() {
+        ensureConsentSubscription()
         guard let config, config.isEnabled else { return }
         let category = ConsentCategory(rawValue: config.persistenceConsentCategory) ?? .analytics
         let allowed = category == .strictlyNecessary || consent.isGranted(category)
@@ -182,7 +213,17 @@ public final class AttributionService {
             storage.removeItem(WildwoodStorageKeys.attribution)
             persisted = false
         }
-        // No consent state yet: stay memory-only until consentDidChange().
+        // No consent state yet: stay memory-only until the consent decision arrives.
+    }
+
+    /// Subscribes once to the consent engine, so a later accept persists the touches and a later
+    /// decline removes them (JS `ensureConsentSubscription`). `dispose()` drops it; the next
+    /// `persistIfAllowed()` re-arms it.
+    private func ensureConsentSubscription() {
+        guard consentSubscription == nil else { return }
+        consentSubscription = consent.onConsentChange { [weak self] _ in
+            self?.consentDidChange()
+        }
     }
 
     private func readStored() -> StoredAttribution? {

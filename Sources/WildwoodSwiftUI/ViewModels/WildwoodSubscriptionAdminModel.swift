@@ -209,7 +209,7 @@ public final class WildwoodSubscriptionAdminModel {
                     ? "Tier change scheduled for \(result.effectiveDate?.formatted(date: .abbreviated, time: .omitted) ?? "the next billing period")."
                     : "Tier changed to \(tier.name)."
                 tierChangePreview = nil
-                invalidateEntitlements()
+                invalidateEntitlements(.tierChange)
                 await loadStatus()
                 await loadFeatures()
                 await loadLimits()
@@ -244,7 +244,7 @@ public final class WildwoodSubscriptionAdminModel {
         successMessage = result.isScheduled
             ? "Cancellation scheduled — access continues until \(result.effectiveDate?.formatted(date: .abbreviated, time: .omitted) ?? "the end of the billing period")."
             : "Subscription cancelled."
-        invalidateEntitlements()
+        invalidateEntitlements(.cancel)
         await loadStatus()
     }
 
@@ -263,7 +263,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Subscribed to \(addOn.name)."
-            invalidateEntitlements()
+            invalidateEntitlements(.addOn)
             await loadAddOns()
         } else {
             errorMessage = "Failed to subscribe to \(addOn.name)."
@@ -283,7 +283,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Add-on cancelled."
-            invalidateEntitlements()
+            invalidateEntitlements(.cancel)
             await loadAddOns()
         } else {
             errorMessage = "Failed to cancel the add-on."
@@ -305,7 +305,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Limit updated."
-            invalidateEntitlements()
+            invalidateEntitlements(.manual)
             await loadLimits()
         } else {
             errorMessage = "Failed to update the limit."
@@ -325,7 +325,7 @@ public final class WildwoodSubscriptionAdminModel {
         }
         if ok {
             successMessage = "Usage reset."
-            invalidateEntitlements()
+            invalidateEntitlements(.manual)
             await loadLimits()
         } else {
             errorMessage = "Failed to reset usage."
@@ -343,7 +343,7 @@ public final class WildwoodSubscriptionAdminModel {
         )
         if ok {
             successMessage = "Override saved."
-            invalidateEntitlements()
+            invalidateEntitlements(.manual)
             await loadOverrides()
             await loadFeatures()
         } else {
@@ -358,7 +358,7 @@ public final class WildwoodSubscriptionAdminModel {
         )
         if ok {
             successMessage = "Override removed."
-            invalidateEntitlements()
+            invalidateEntitlements(.manual)
             await loadOverrides()
             await loadFeatures()
         } else {
@@ -371,10 +371,11 @@ public final class WildwoodSubscriptionAdminModel {
     /// Entitlement-changing mutations must also invalidate the shared
     /// FeatureStore — otherwise FeatureGates elsewhere in the app serve the
     /// pre-mutation plan for the store's cache TTL (mirrors
-    /// useSubscriptionAdmin's invalidateFeatures wiring). Invalidation is
-    /// lazy: gates reload on demand via the store's epoch, no eager refetch.
-    private func invalidateEntitlements() {
-        client.features.invalidate()
+    /// useSubscriptionAdmin's `wrapMutation`, which invalidates and THEN emits
+    /// `entitlementsChanged` with the reason). Invalidation is lazy: gates
+    /// reload on demand via the store's epoch, no eager refetch.
+    private func invalidateEntitlements(_ reason: EntitlementsChangedReason) {
+        client.features.invalidateEntitlements(appId: appId, reason: reason)
     }
 
     public func clearMessages() {

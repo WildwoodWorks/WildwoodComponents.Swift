@@ -160,3 +160,62 @@ struct AttributionTouchRequest: Encodable, Sendable {
     let touch: AttributionTouch
     let platform: String
 }
+
+/// Posted to POST api/attribution/claim?appId= (authenticated) after a provider signup. The wire
+/// shape is the payload with `appId` alongside it, exactly as the JS SDK spreads it.
+struct AttributionClaimRequest: Encodable, Sendable {
+    let appId: String
+    let version: Int
+    let visitorKey: String
+    let firstTouch: AttributionTouch?
+    let lastTouch: AttributionTouch?
+    let platform: String
+    let sdk: String
+
+    init(appId: String, payload: AttributionPayload) {
+        self.appId = appId
+        self.version = payload.version
+        self.visitorKey = payload.visitorKey
+        self.firstTouch = payload.firstTouch
+        self.lastTouch = payload.lastTouch
+        self.platform = payload.platform
+        self.sdk = payload.sdk
+    }
+}
+
+/// Result of a claim. `reason` is nil when the attribution was recorded; otherwise it is the
+/// server's refusal (`Disabled`, `WindowExpired`, `AlreadyRecorded`, `Empty`, `NotAppUser`) —
+/// a String, like every other server-defined code in this SDK, so a new one never fails decoding.
+public struct AttributionClaimResponse: Codable, Sendable, Equatable {
+    public var recorded: Bool
+    public var reason: String?
+
+    public init(recorded: Bool = false, reason: String? = nil) {
+        self.recorded = recorded
+        self.reason = reason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        recorded = try c.decodeIfPresent(Bool.self, forKey: .recorded) ?? false
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
+    }
+}
+
+/// The slice of ``AttributionService`` that registration needs; ``AuthService`` depends on nothing
+/// else. Closures rather than a protocol because `AttributionService` is main-actor isolated while
+/// `AuthService` is not: the hop is explicit, and a test can supply a fake in one line.
+public struct AttributionRegistrationSource: Sendable {
+    /// The payload for a registration request, or nil when there is nothing to send.
+    public var payload: @Sendable () async -> AttributionPayload?
+    /// Drops the captured touches after a recorded signup.
+    public var clear: @Sendable () async -> Void
+
+    public init(
+        payload: @escaping @Sendable () async -> AttributionPayload?,
+        clear: @escaping @Sendable () async -> Void
+    ) {
+        self.payload = payload
+        self.clear = clear
+    }
+}
