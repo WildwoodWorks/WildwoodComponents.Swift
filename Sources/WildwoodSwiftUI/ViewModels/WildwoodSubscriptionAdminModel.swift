@@ -45,6 +45,29 @@ public final class WildwoodSubscriptionAdminModel {
     /// can't be stopped server-side — the user must also cancel there).
     public private(set) var lastCancelResult: AppTierCancelResultModel?
 
+    /// The app bills through the App Store only. Packs have no in-app-purchase product mapping
+    /// (pack checkout is card-only), so a pack PURCHASE cannot be offered here — rows the account
+    /// already owns, bundled rows and granted rows still render, and cancelling still surfaces the
+    /// store instructions the tier cancel already does.
+    public private(set) var requiresAppStorePayment = false
+
+    /// The currency the catalog quotes in, for a pack or plan that carries none of its own:
+    /// the first tier that names one, else nil (which formats as USD).
+    public var catalogCurrency: String? {
+        for tier in tiers {
+            if let currency = tier.currency, !currency.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return currency
+            }
+        }
+        return nil
+    }
+
+    /// The plan the account is on, for the "Included in Plan" rule on a bundled pack.
+    public var currentTierId: String? {
+        guard let id = subscription?.appTierId, !id.isEmpty else { return nil }
+        return id
+    }
+
     public init(client: WildwoodClient, appId: String, scope: SubscriptionAdminScope = .currentUser) {
         self.client = client
         self.appId = appId
@@ -60,7 +83,16 @@ public final class WildwoodSubscriptionAdminModel {
         async let addOns: Void = loadAddOns()
         async let limits: Void = loadLimits()
         async let ovr: Void = loadOverrides()
-        _ = await (status, plans, feats, addOns, limits, ovr)
+        async let platform: Void = loadPaymentPlatform()
+        _ = await (status, plans, feats, addOns, limits, ovr, platform)
+    }
+
+    /// Read the app's platform-filtered payment configuration, which is what says whether Apple
+    /// owns billing here. A failed lookup leaves the flag false: hiding a purchase affordance is
+    /// the safe answer only when the server actually said so.
+    public func loadPaymentPlatform() async {
+        let providers = try? await client.payment.getAvailableProviders(appId: appId)
+        requiresAppStorePayment = providers?.requiresAppStorePayment ?? false
     }
 
     // MARK: - Loads
@@ -250,44 +282,90 @@ public final class WildwoodSubscriptionAdminModel {
 
     // MARK: - Add-ons
 
-    public func subscribeToAddOn(_ addOn: AppTierAddOnModel, pricing: AppTierAddOnPricingModel?) async {
+    /// Buy one pack, on the pricing option the row offered.
+    ///
+    /// The self-service path goes through the structured call so a refusal keeps the server's own
+    /// words — "you already own that pack" has to read differently from "the card was declined".
+    /// The two admin paths still answer a bare Bool, so they get the action's wording.
+    @discardableResult
+    public func subscribeToAddOn(_ addOn: AppTierAddOnModel, pricing: AppTierAddOnPricingModel?) async -> Bool {
         clearMessages()
-        let ok: Bool
+        let refusal: String?
         switch scope {
         case .currentUser:
-            ok = await client.appTier.subscribeToAddOn(appId: appId, addOnId: addOn.id, pricingId: pricing?.id)
+            let result = try? await client.appTier.subscribeToAddOnDetailed(
+                appId: appId, addOnId: addOn.id, pricingId: pricing?.id
+            )
+            refusal = result?.success == true ? nil : AddOnRowRules.failureMessage(
+                .subscribe, name: addOn.name, serverMessage: result?.error?.message
+            )
         case .user(let userId):
-            ok = await client.appTier.subscribeUserToAddOn(appId: appId, userId: userId, addOnId: addOn.id)
+            let ok = await client.appTier.subscribeUserToAddOn(appId: appId, userId: userId, addOnId: addOn.id)
+            refusal = ok ? nil : AddOnRowRules.failureMessage(.subscribe, name: addOn.name, serverMessage: nil)
         case .company(let companyId):
-            ok = await client.appTier.subscribeCompanyToAddOn(appId: appId, companyId: companyId, addOnId: addOn.id)
+            let ok = await client.appTier.subscribeCompanyToAddOn(appId: appId, companyId: companyId, addOnId: addOn.id)
+            refusal = ok ? nil : AddOnRowRules.failureMessage(.subscribe, name: addOn.name, serverMessage: nil)
         }
-        if ok {
-            successMessage = "Subscribed to \(addOn.name)."
-            invalidateEntitlements(.addOn)
-            await loadAddOns()
-        } else {
-            errorMessage = "Failed to subscribe to \(addOn.name)."
+
+        guard refusal == nil else {
+            errorMessage = refusal ?? ""
+            return false
         }
+        successMessage = "Subscribed to \(addOn.name)."
+        invalidateEntitlements(.addOn)
+        await loadAddOns()
+        return true
     }
 
-    public func cancelAddOn(_ subscription: UserAddOnSubscriptionModel) async {
+    /// Cancel one pack. `immediate` is false by default, which is what the panel asks for: access
+    /// continues to the end of the period already paid for, and the row can be reactivated until
+    /// then.
+    @discardableResult
+    public func cancelAddOn(_ subscription: UserAddOnSubscriptionModel, immediate: Bool = false) async -> Bool {
         clearMessages()
-        let ok: Bool
+        let refusal: String?
         switch scope {
         case .currentUser:
-            ok = await client.appTier.cancelAddOnSubscription(subscriptionId: subscription.id)
+            let result = try? await client.appTier.cancelAddOnDetailed(
+                subscriptionId: subscription.id, immediate: immediate
+            )
+            refusal = result?.success == true ? nil : AddOnRowRules.failureMessage(
+                .cancel, name: subscription.addOnName, serverMessage: result?.errorMessage
+            )
         case .user:
-            ok = await client.appTier.cancelUserAddOn(appId: appId, subscriptionId: subscription.id)
+            let ok = await client.appTier.cancelUserAddOn(appId: appId, subscriptionId: subscription.id)
+            refusal = ok ? nil : AddOnRowRules.failureMessage(.cancel, name: subscription.addOnName, serverMessage: nil)
         case .company:
-            ok = await client.appTier.cancelCompanyAddOn(subscriptionId: subscription.id)
+            let ok = await client.appTier.cancelCompanyAddOn(subscriptionId: subscription.id)
+            refusal = ok ? nil : AddOnRowRules.failureMessage(.cancel, name: subscription.addOnName, serverMessage: nil)
         }
-        if ok {
-            successMessage = "Add-on cancelled."
-            invalidateEntitlements(.cancel)
-            await loadAddOns()
-        } else {
-            errorMessage = "Failed to cancel the add-on."
+
+        guard refusal == nil else {
+            errorMessage = refusal ?? ""
+            return false
         }
+        successMessage = "Add-on cancelled."
+        invalidateEntitlements(.cancel)
+        await loadAddOns()
+        return true
+    }
+
+    /// Take back a scheduled pack cancellation. Self-service only — the admin routes have no
+    /// reactivate endpoint, so the panel never offers it in an admin scope.
+    @discardableResult
+    public func reactivateAddOn(_ subscription: UserAddOnSubscriptionModel) async -> Bool {
+        clearMessages()
+        let result = try? await client.appTier.reactivateAddOn(subscriptionId: subscription.id)
+        guard result?.success == true else {
+            errorMessage = AddOnRowRules.failureMessage(
+                .reactivate, name: subscription.addOnName, serverMessage: result?.errorMessage
+            )
+            return false
+        }
+        successMessage = "\(subscription.addOnName) will continue."
+        invalidateEntitlements(.reactivate)
+        await loadAddOns()
+        return true
     }
 
     // MARK: - Usage limits (admin)

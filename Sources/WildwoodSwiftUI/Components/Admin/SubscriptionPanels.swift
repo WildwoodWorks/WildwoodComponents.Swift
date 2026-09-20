@@ -45,7 +45,15 @@ public struct SubscriptionStatusPanel: View {
                     }
                     detailRow("Started", subscription.startDate)
                     detailRow("Current period ends", subscription.currentPeriodEnd)
-                    detailRow("Trial ends", subscription.trialEndDate)
+                    // Only while the trial is actually running: the server keeps a finished
+                    // trial's end date on the row, and showing it unconditionally put
+                    // "Trial ends" on an Active, paid plan.
+                    if SubscriptionAccess.isTrialRunning(
+                        status: subscription.status,
+                        trialEnd: subscription.trialEndDate
+                    ) {
+                        detailRow("Trial ends", subscription.trialEndDate)
+                    }
                     if !subscription.pendingTierName.isEmpty {
                         Label("Pending change to \(subscription.pendingTierName)", systemImage: "clock.arrow.circlepath")
                             .font(.caption)
@@ -150,14 +158,17 @@ public struct SubscriptionStatusPanel: View {
 
 public struct TierPlansPanel: View {
     @Bindable var model: WildwoodSubscriptionAdminModel
-    let onPaymentRequired: ((AppTierModel, AppTierPricingModel?) async -> String?)?
+    /// Collect payment for a plan change. The args carry the pricing MODEL id, the PLAN's price
+    /// (never the prorated charge) and the option's trial days, so a host wiring this into
+    /// `PaymentComponent` gets a recurring subscription rather than a one-off charge.
+    let onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)?
 
     @State private var selectedPricingByTier: [String: String] = [:]
     @State private var pendingChange: (tier: AppTierModel, pricing: AppTierPricingModel?)?
 
     public init(
         model: WildwoodSubscriptionAdminModel,
-        onPaymentRequired: ((AppTierModel, AppTierPricingModel?) async -> String?)? = nil
+        onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)? = nil
     ) {
         self.model = model
         self.onPaymentRequired = onPaymentRequired
@@ -170,6 +181,7 @@ public struct TierPlansPanel: View {
                     tier: tier,
                     selectedPricing: selectedPricing(for: tier),
                     isCurrentTier: tier.id == model.subscription?.appTierId,
+                    currency: model.catalogCurrency,
                     onSelectPricing: { pricing in
                         selectedPricingByTier[tier.id] = pricing.id
                     },
@@ -189,7 +201,13 @@ public struct TierPlansPanel: View {
                     Task {
                         var transactionId: String?
                         if preview.paymentRequired, !preview.paymentBypassAllowed, let onPaymentRequired {
-                            transactionId = await onPaymentRequired(pending.tier, pending.pricing)
+                            transactionId = await onPaymentRequired(
+                                WildwoodPaymentRequiredArgs(
+                                    tier: pending.tier,
+                                    pricing: pending.pricing,
+                                    fallbackCurrency: model.catalogCurrency ?? preview.currency
+                                )
+                            )
                             if transactionId == nil {
                                 model.clearPreview()
                                 return
@@ -296,8 +314,11 @@ struct TierChangeConfirmationSheet: View {
         }
     }
 
+    /// Through the shared formatter: a missing amount reads as the currency's zero rather than a
+    /// hard-coded "$0.00", and an ISO code outside the symbol table renders as itself instead of
+    /// a dollar sign.
     private func formatted(_ amount: Double?) -> String {
-        (amount ?? 0).formatted(.currency(code: preview.currency))
+        WildwoodMoney.format(amount ?? 0, currency: preview.currency)
     }
 }
 
@@ -305,9 +326,12 @@ struct TierChangeConfirmationSheet: View {
 
 public struct FeaturesPanel: View {
     @Bindable var model: WildwoodSubscriptionAdminModel
+    /// Badge on a feature the account has outside its plan.
+    private let includedLabel: String
 
-    public init(model: WildwoodSubscriptionAdminModel) {
+    public init(model: WildwoodSubscriptionAdminModel, includedLabel: String = "Included") {
         self.model = model
+        self.includedLabel = includedLabel
     }
 
     public var body: some View {
@@ -316,22 +340,44 @@ public struct FeaturesPanel: View {
                 ContentUnavailableView("No features defined", systemImage: "switch.2")
             } else {
                 ForEach(definitions) { definition in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(definition.displayName).font(.subheadline.weight(.medium))
-                            if !definition.description.isEmpty {
-                                Text(definition.description).font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
-                        Spacer()
-                        let hasAccess = model.features[definition.featureCode] ?? false
-                        Image(systemName: hasAccess ? "checkmark.circle.fill" : "lock.fill")
-                            .foregroundStyle(hasAccess ? .green : .secondary)
-                    }
-                    .padding(.vertical, 4)
+                    featureRow(definition)
                 }
             }
         }
+    }
+
+    @ViewBuilder private func featureRow(_ definition: AppFeatureDefinitionModel) -> some View {
+        let hasAccess = model.features[definition.featureCode] ?? false
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(definition.displayName).font(.subheadline.weight(.medium))
+                    // An enabled feature granted by an override is not part of the plan — say so,
+                    // to everyone and not only to admins.
+                    if hasAccess, isGrantedByOverride(definition.featureCode) {
+                        Text(includedLabel)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.blue.opacity(0.15), in: Capsule())
+                    }
+                }
+                if !definition.description.isEmpty {
+                    Text(definition.description).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Image(systemName: hasAccess ? "checkmark.circle.fill" : "lock.fill")
+                .foregroundStyle(hasAccess ? .green : .secondary)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// NOTE: the self-service scope has no override list — the server exposes overrides to admin
+    /// callers only (`loadOverrides` returns [] for `.currentUser`), so the badge appears in the
+    /// admin scopes. Nothing is invented for the self scope.
+    private func isGrantedByOverride(_ featureCode: String) -> Bool {
+        model.overrides.contains { $0.featureCode == featureCode && $0.isEnabled }
     }
 
     private var definitions: [AppFeatureDefinitionModel] {
@@ -345,77 +391,266 @@ public struct FeaturesPanel: View {
 
 // MARK: - Add-ons
 
+/// The packs panel.
+///
+/// One access-granting rule decides both lists (``AddOnRowRules``): a Cancelled or Expired row
+/// grants nothing and its pack goes back on offer, while a row scheduled to cancel is still owned
+/// and is not sold twice. A row with no payment behind it was granted rather than sold, so it
+/// promises no renewal, offers no reactivate, and says something different before it is cancelled.
 public struct AddOnsPanel: View {
     @Bindable var model: WildwoodSubscriptionAdminModel
+    private let labels: AddOnsPanelLabels
+    private let allowCancel: Bool
 
-    public init(model: WildwoodSubscriptionAdminModel) {
+    /// The last refused action, in the server's own words. Cleared when the next attempt starts,
+    /// so a retry never shows a stale message.
+    @State private var actionError = ""
+    @State private var processingId: String?
+    @State private var processingAction: AddOnAction = .cancel
+    /// The row whose cancellation is being confirmed. Nothing is cancelled on the first tap.
+    @State private var confirmingSubscription: UserAddOnSubscriptionModel?
+
+    public init(
+        model: WildwoodSubscriptionAdminModel,
+        labels: AddOnsPanelLabels = AddOnsPanelLabels(),
+        allowCancel: Bool = true
+    ) {
         self.model = model
+        self.labels = labels
+        self.allowCancel = allowCancel
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if !model.addOnSubscriptions.isEmpty {
+            if !actionError.isEmpty {
+                ErrorBannerView(message: actionError) { actionError = "" }
+            }
+
+            if !ownedRows.isEmpty {
                 Text("Active Add-Ons").font(.headline)
-                ForEach(model.addOnSubscriptions) { sub in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 6) {
-                                Text(sub.addOnName).font(.subheadline.weight(.medium))
-                                if sub.isBundled {
-                                    Text("Bundled")
-                                        .font(.caption2.weight(.semibold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(.blue.opacity(0.15), in: Capsule())
-                                }
-                            }
-                            Text(sub.status).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if !sub.isBundled {
-                            Button("Cancel", role: .destructive) {
-                                Task { await model.cancelAddOn(sub) }
-                            }
-                            .font(.caption)
-                        }
-                    }
-                    .padding(.vertical, 4)
+                ForEach(ownedRows) { sub in
+                    ownedRow(sub)
                 }
             }
 
-            let active = Set(model.addOnSubscriptions.map(\.appTierAddOnId))
-            let available = model.availableAddOns.filter { !active.contains($0.id) }
-            if !available.isEmpty {
+            if !availableRows.isEmpty {
                 Text("Available Add-Ons").font(.headline)
-                ForEach(available) { addOn in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text(addOn.name).font(.subheadline.weight(.medium))
-                            Spacer()
-                            if let pricing = addOn.pricingOptions.first(where: \.isDefault) ?? addOn.pricingOptions.first {
-                                Text("\(pricing.price.formatted(.currency(code: "USD"))) / \(pricing.billingFrequency)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        if !addOn.description.isEmpty {
-                            Text(addOn.description).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Button("Add") {
-                            let pricing = addOn.pricingOptions.first(where: \.isDefault) ?? addOn.pricingOptions.first
-                            Task { await model.subscribeToAddOn(addOn, pricing: pricing) }
-                        }
-                        .buttonStyle(.bordered)
-                        .font(.caption)
-                    }
-                    .padding()
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+                ForEach(availableRows) { addOn in
+                    availableRow(addOn)
                 }
             }
 
-            if model.addOnSubscriptions.isEmpty, model.availableAddOns.isEmpty {
+            if ownedRows.isEmpty, availableRows.isEmpty {
                 ContentUnavailableView("No add-ons", systemImage: "puzzlepiece.extension")
             }
+        }
+        .confirmationDialog(
+            confirmTitle,
+            isPresented: Binding(
+                get: { confirmingSubscription != nil },
+                set: { if !$0 { confirmingSubscription = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: confirmingSubscription
+        ) { sub in
+            Button(labels.cancelConfirm, role: .destructive) {
+                confirmingSubscription = nil
+                run(.cancel, on: sub)
+            }
+            Button(labels.cancelKeep, role: .cancel) {
+                confirmingSubscription = nil
+            }
+        } message: { sub in
+            Text(decision(for: sub).cancelMessage)
+        }
+    }
+
+    /// Typed String so the dialog binds to the plain-text overload, not LocalizedStringKey.
+    private var confirmTitle: String {
+        "Cancel \(confirmingSubscription?.addOnName ?? "pack")"
+    }
+
+    // MARK: - Rows
+
+    @ViewBuilder private func ownedRow(_ sub: UserAddOnSubscriptionModel) -> some View {
+        let rules = decision(for: sub)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Text(sub.addOnName).font(.subheadline.weight(.medium))
+                badge(rules.statusLabel, color: badgeColor(rules))
+                if rules.showsIncludedBadge {
+                    badge(labels.included, color: .blue)
+                }
+                Spacer()
+            }
+            if !sub.addOnDescription.isEmpty {
+                Text(sub.addOnDescription).font(.caption).foregroundStyle(.secondary)
+            }
+            Text(dateLineText(sub, rules: rules))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if processingId == sub.id {
+                // Typed String so the label binds to the plain-text overload, not
+                // LocalizedStringKey.
+                let busyLabel: String = processingAction == .reactivate ? "Reactivating\u{2026}" : "Cancelling\u{2026}"
+                Text(busyLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 12) {
+                    if rules.offersReactivate {
+                        Button(labels.reactivate) { run(.reactivate, on: sub) }
+                            .buttonStyle(.bordered)
+                            .font(.caption)
+                    }
+                    if rules.offersCancel {
+                        Button("Cancel", role: .destructive) { confirmingSubscription = sub }
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder private func availableRow(_ addOn: AppTierAddOnModel) -> some View {
+        let pricing = AddOnRowRules.defaultPricing(addOn)
+        let bundled = AddOnRowRules.isBundledInTier(addOn, currentTierId: model.currentTierId)
+        let trial = AddOnRowRules.trialLabel(addOn: addOn, pricing: pricing)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(addOn.name).font(.subheadline.weight(.medium))
+                Spacer()
+                if pricing != nil {
+                    Text(priceText(addOn, pricing: pricing))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if !addOn.description.isEmpty {
+                Text(addOn.description).font(.caption).foregroundStyle(.secondary)
+            }
+            if !trial.isEmpty {
+                Text(trial).font(.caption).foregroundStyle(.secondary)
+            }
+            if bundled {
+                badge("Included in Plan", color: .blue)
+            } else if !model.requiresAppStorePayment {
+                // Apple owns billing in an App-Store-exclusive app and packs have no in-app
+                // purchase product mapping, so there is nothing to offer here.
+                let subscribeLabel: String = processingId == addOn.id ? "Subscribing\u{2026}" : "Subscribe"
+                Button(subscribeLabel) {
+                    run(subscribe: addOn, pricing: pricing)
+                }
+                .buttonStyle(.bordered)
+                .font(.caption)
+                .disabled(processingId == addOn.id)
+            }
+        }
+        .padding()
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Derived state
+
+    private var ownedRows: [UserAddOnSubscriptionModel] {
+        AddOnRowRules.ownedRows(model.addOnSubscriptions)
+    }
+
+    private var availableRows: [AppTierAddOnModel] {
+        AddOnRowRules.availableRows(model.availableAddOns, subscriptions: model.addOnSubscriptions)
+    }
+
+    /// The admin routes have no reactivate endpoint, so an admin scope never offers it.
+    private var canReactivate: Bool {
+        !model.scope.isAdmin
+    }
+
+    private func decision(for sub: UserAddOnSubscriptionModel) -> AddOnRowDecision {
+        AddOnRowRules.describe(sub, canCancel: allowCancel, canReactivate: canReactivate, labels: labels)
+    }
+
+    private func priceText(_ addOn: AppTierAddOnModel, pricing: AppTierAddOnPricingModel?) -> String {
+        let money = AddOnRowRules.formatPrice(addOn: addOn, pricing: pricing, catalogCurrency: model.catalogCurrency)
+        return "\(money) / \(AddOnRowRules.billingSuffix(pricing))"
+    }
+
+    private func dateLineText(_ sub: UserAddOnSubscriptionModel, rules: AddOnRowDecision) -> String {
+        var line = "Started: \(Self.dateText(sub.startDate))"
+        switch rules.dateLine {
+        case .renews:
+            line += " | Renews: \(Self.dateText(rules.endDate))"
+        case .cancels:
+            line += " | Cancels on: \(Self.dateText(rules.endDate))"
+        case .cancelsAtPeriodEnd:
+            line += " | Cancels at the end of the billing period"
+        case .none:
+            break
+        }
+        return line
+    }
+
+    private static func dateText(_ date: Date?) -> String {
+        guard let date else { return "\u{2014}" }
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    private func badgeColor(_ rules: AddOnRowDecision) -> Color {
+        if rules.statusLabel == "Bundled" { return .blue }
+        return rules.cancelling ? .orange : .green
+    }
+
+    private func badge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15), in: Capsule())
+            .foregroundStyle(color)
+    }
+
+    // MARK: - Actions
+
+    /// Cancel/reactivate. A refusal is SHOWN with whatever the server said — an invisible failure
+    /// looked exactly like a purchase that went through.
+    private func run(_ action: AddOnAction, on sub: UserAddOnSubscriptionModel) {
+        actionError = ""
+        processingAction = action
+        processingId = sub.id
+        Task {
+            let ok: Bool
+            if action == .reactivate {
+                ok = await model.reactivateAddOn(sub)
+            } else {
+                // End of the paid period, not immediately: the row keeps access until then.
+                ok = await model.cancelAddOn(sub, immediate: false)
+            }
+            if !ok {
+                actionError = AddOnRowRules.failureMessage(
+                    action,
+                    name: sub.addOnName,
+                    serverMessage: model.errorMessage.isEmpty ? nil : model.errorMessage
+                )
+            }
+            processingId = nil
+        }
+    }
+
+    private func run(subscribe addOn: AppTierAddOnModel, pricing: AppTierAddOnPricingModel?) {
+        actionError = ""
+        processingAction = .subscribe
+        processingId = addOn.id
+        Task {
+            let ok = await model.subscribeToAddOn(addOn, pricing: pricing)
+            if !ok {
+                actionError = AddOnRowRules.failureMessage(
+                    .subscribe,
+                    name: addOn.name,
+                    serverMessage: model.errorMessage.isEmpty ? nil : model.errorMessage
+                )
+            }
+            processingId = nil
         }
     }
 }

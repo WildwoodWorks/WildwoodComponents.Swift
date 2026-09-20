@@ -21,6 +21,19 @@ public struct PaymentComponent: View {
     private let customerEmail: String?
     private let subscriptionId: String?
     private let isSubscription: Bool
+    /// The pricing MODEL id the subscription attaches to. WITHOUT it the server charges once and
+    /// creates no recurring subscription, no renewal and no trial — the bug JS 05dd7cb fixed, and
+    /// exactly what a host wiring `onPaymentRequired` into this component used to reproduce.
+    private let pricingModelId: String?
+    private let billingFrequency: String?
+    /// Free-trial days the plan advertises, for the button and its note. Suppressed on the App
+    /// Store path, where the trial is StoreKit's introductory offer and Apple's own sheet states
+    /// it — two different trials must never be described on one screen.
+    private let trialDays: Int?
+    private let orderId: String?
+    private let returnUrl: String?
+    private let cancelUrl: String?
+    private let metadata: [String: String]?
     private let showAmount: Bool
     /// Force the App Store path during development/TestFlight (StoreKit sandbox).
     private let treatDevelopmentAsAppStore: Bool
@@ -35,6 +48,7 @@ public struct PaymentComponent: View {
     @State private var selectedProviderId: String?
     @State private var pendingRedirectPayment: InitiatePaymentResponse?
     @State private var purchaseManager: StoreKitPurchaseManager?
+    @State private var paymentModel: WildwoodPaymentModel?
 
     public init(
         appId: String? = nil,
@@ -45,6 +59,13 @@ public struct PaymentComponent: View {
         customerEmail: String? = nil,
         subscriptionId: String? = nil,
         isSubscription: Bool = false,
+        pricingModelId: String? = nil,
+        billingFrequency: String? = nil,
+        trialDays: Int? = nil,
+        orderId: String? = nil,
+        returnUrl: String? = nil,
+        cancelUrl: String? = nil,
+        metadata: [String: String]? = nil,
         showAmount: Bool = true,
         treatDevelopmentAsAppStore: Bool = false,
         onPaymentSuccess: ((PaymentCompletionResult) -> Void)? = nil,
@@ -59,11 +80,53 @@ public struct PaymentComponent: View {
         self.customerEmail = customerEmail
         self.subscriptionId = subscriptionId
         self.isSubscription = isSubscription
+        self.pricingModelId = pricingModelId
+        self.billingFrequency = billingFrequency
+        self.trialDays = trialDays
+        self.orderId = orderId
+        self.returnUrl = returnUrl
+        self.cancelUrl = cancelUrl
+        self.metadata = metadata
         self.showAmount = showAmount
         self.treatDevelopmentAsAppStore = treatDevelopmentAsAppStore
         self.onPaymentSuccess = onPaymentSuccess
         self.onPaymentFailure = onPaymentFailure
         self.onCancel = onCancel
+    }
+
+    /// Convenience for the plan a component handed back through `onPaymentRequired`: every field
+    /// the server needs for a recurring subscription comes across in one value.
+    public init(
+        args: WildwoodPaymentRequiredArgs,
+        appId: String? = nil,
+        description: String? = nil,
+        customerId: String? = nil,
+        customerEmail: String? = nil,
+        subscriptionId: String? = nil,
+        showAmount: Bool = true,
+        treatDevelopmentAsAppStore: Bool = false,
+        onPaymentSuccess: ((PaymentCompletionResult) -> Void)? = nil,
+        onPaymentFailure: ((String) -> Void)? = nil,
+        onCancel: (() -> Void)? = nil
+    ) {
+        self.init(
+            appId: appId,
+            amount: args.price,
+            currency: args.currency,
+            description: description ?? args.tier.name,
+            customerId: customerId,
+            customerEmail: customerEmail,
+            subscriptionId: subscriptionId,
+            isSubscription: args.isSubscription,
+            pricingModelId: args.pricingModelId,
+            billingFrequency: args.pricing?.billingFrequency,
+            trialDays: args.trialDays,
+            showAmount: showAmount,
+            treatDevelopmentAsAppStore: treatDevelopmentAsAppStore,
+            onPaymentSuccess: onPaymentSuccess,
+            onPaymentFailure: onPaymentFailure,
+            onCancel: onCancel
+        )
     }
 
     public var body: some View {
@@ -109,6 +172,17 @@ public struct PaymentComponent: View {
             }
         }
         .task { await load() }
+        // A form reused for another plan must re-price: the initiation the previous plan left
+        // behind is for a different amount.
+        .onChange(of: planIdentity) { _, _ in
+            paymentModel?.clearPendingIntent()
+        }
+    }
+
+    /// Identifies the plan currently on screen (pricing model, trial, amount) — the key JS keeps
+    /// its reusable intent and its trial offer under.
+    private var planIdentity: String {
+        "\(pricingModelId ?? "")|\(trialDays ?? 0)|\(amount)"
     }
 
     // MARK: - Auto-detect
@@ -164,7 +238,8 @@ public struct PaymentComponent: View {
             return
         }
         guard let resolvedAppId = appId ?? client.config.appId,
-              let manager = purchaseManager else { return }
+              let manager = purchaseManager,
+              let paymentModel else { return }
         isProcessing = true
         defer { isProcessing = false }
 
@@ -172,13 +247,18 @@ public struct PaymentComponent: View {
             // Initiate with the Wildwood backend: it returns the App Store
             // product id(s) mapped to this purchase, keeping product
             // configuration in WildwoodAdmin rather than the app binary.
-            let initiation = try await client.payment.initiatePayment(makeRequest(providerId: provider.id, appId: resolvedAppId))
+            // Through the model, so a second tap after a cancelled StoreKit sheet reuses the
+            // same initiation instead of opening another one server-side.
+            let initiation = try await paymentModel.initiate(
+                makeAttempt(providerId: provider.id, appId: resolvedAppId)
+            )
             guard initiation.success, let productId = initiation.productIds?.first else {
                 fail(initiation.errorMessage ?? "The backend did not return an App Store product for this purchase.")
                 return
             }
 
             let result = try await manager.purchase(productId: productId)
+            paymentModel.clearPendingIntent()
             onPaymentSuccess?(result.validation)
         } catch WildwoodPurchaseError.purchaseCancelled {
             onCancel?()
@@ -232,17 +312,44 @@ public struct PaymentComponent: View {
                     if isProcessing {
                         ProgressView().frame(maxWidth: .infinity)
                     } else {
-                        Text("Pay Now").frame(maxWidth: .infinity)
+                        Text(payButtonLabel).frame(maxWidth: .infinity)
                     }
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(isProcessing)
+
+                if !trialNote.isEmpty {
+                    Text(trialNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }
 
+    /// "Start 14-day free trial" when the plan carries one, else "Pay $79.00". The trial copy is
+    /// for the NON-store path only — on the App Store path Apple's sheet states the introductory
+    /// offer and its price, and two descriptions of one trial is how a customer gets surprised.
+    private var payButtonLabel: String {
+        WildwoodPaymentModel.payButtonLabel(
+            amount: amount,
+            currency: resolvedCurrency,
+            trialDays: trialDays
+        )
+    }
+
+    private var trialNote: String {
+        guard WildwoodPaymentModel.hasTrialOffer(trialDays: trialDays) else { return "" }
+        return WildwoodPaymentModel.trialChargeNote(amount: amount, currency: resolvedCurrency)
+    }
+
+    private var resolvedCurrency: String? {
+        currency ?? providerInfo?.defaultProvider?.defaultCurrency
+    }
+
     private func payWithSelectedProvider(_ info: PlatformFilteredProvidersDto) async {
-        guard let client else { return }
+        guard let client, let paymentModel else { return }
         guard let resolvedAppId = appId ?? client.config.appId else { return }
         let providerId = selectedProviderId ?? info.defaultProvider?.id ?? info.availableProviders.first?.id
         guard let providerId else { return }
@@ -250,7 +357,12 @@ public struct PaymentComponent: View {
         isProcessing = true
         defer { isProcessing = false }
         do {
-            let initiation = try await client.payment.initiatePayment(makeRequest(providerId: providerId, appId: resolvedAppId))
+            // Reuses the initiation a previous press created for this same provider, plan,
+            // amount and subscription-ness. Pressing Pay again after a decline used to create a
+            // second subscription nobody cancelled.
+            let initiation = try await paymentModel.initiate(
+                makeAttempt(providerId: providerId, appId: resolvedAppId)
+            )
             guard initiation.success else {
                 fail(initiation.errorMessage ?? "Payment could not be started.")
                 return
@@ -268,6 +380,7 @@ public struct PaymentComponent: View {
                     providerType: initiation.resolvedProviderType ?? .stripe
                 )
                 if result.success {
+                    paymentModel.clearPendingIntent()
                     onPaymentSuccess?(result)
                 } else {
                     fail(result.errorMessage ?? "Payment confirmation failed.")
@@ -316,6 +429,7 @@ public struct PaymentComponent: View {
             let result = try await client.payment.getPaymentStatus(transactionId: intentId)
             if result.success {
                 pendingRedirectPayment = nil
+                paymentModel?.clearPendingIntent()
                 onPaymentSuccess?(result)
             } else {
                 errorMessage = result.errorMessage ?? "Payment is not complete yet."
@@ -327,8 +441,11 @@ public struct PaymentComponent: View {
 
     // MARK: - Shared
 
-    private func makeRequest(providerId: String, appId: String) -> InitiatePaymentRequest {
-        InitiatePaymentRequest(
+    /// Everything the initiation carries. `supportsSetupIntent` is never among it: this package
+    /// has no way to confirm a SetupIntent, and one that nothing confirms leaves a trial with no
+    /// saved card.
+    private func makeAttempt(providerId: String, appId: String) -> WildwoodPaymentAttempt {
+        WildwoodPaymentAttempt(
             providerId: providerId,
             appId: appId,
             amount: amount,
@@ -336,8 +453,15 @@ public struct PaymentComponent: View {
             description: descriptionText,
             customerId: customerId,
             customerEmail: customerEmail,
+            orderId: orderId,
             subscriptionId: subscriptionId,
-            isSubscription: isSubscription ? true : nil
+            pricingModelId: pricingModelId,
+            billingFrequency: billingFrequency,
+            returnUrl: returnUrl,
+            cancelUrl: cancelUrl,
+            metadata: metadata,
+            isSubscription: isSubscription,
+            trialDays: trialDays
         )
     }
 
@@ -353,6 +477,10 @@ public struct PaymentComponent: View {
         guard let resolvedAppId = appId ?? client.config.appId else {
             errorMessage = "PaymentComponent requires an appId."
             return
+        }
+
+        if paymentModel == nil {
+            paymentModel = WildwoodPaymentModel(payment: client.payment)
         }
 
         // One long-lived manager: observes Transaction.updates so renewals,

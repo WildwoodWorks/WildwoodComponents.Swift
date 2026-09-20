@@ -10,7 +10,10 @@ public struct AppTierComponent: View {
 
     private let appId: String?
     private let showUpgradeOptions: Bool
-    private let onTierChangeRequested: ((AppTierModel, AppTierPricingModel?) -> Void)?
+    /// The plan the user picked, with the pricing MODEL id, the plan's own price and its trial
+    /// days already resolved (JS 05dd7cb) — a host forwarding these into a payment screen gets a
+    /// recurring subscription rather than a one-off charge.
+    private let onTierChangeRequested: ((WildwoodPaymentRequiredArgs) -> Void)?
 
     @State private var isLoading = true
     @State private var errorMessage = ""
@@ -21,7 +24,7 @@ public struct AppTierComponent: View {
     public init(
         appId: String? = nil,
         showUpgradeOptions: Bool = true,
-        onTierChangeRequested: ((AppTierModel, AppTierPricingModel?) -> Void)? = nil
+        onTierChangeRequested: ((WildwoodPaymentRequiredArgs) -> Void)? = nil
     ) {
         self.appId = appId
         self.showUpgradeOptions = showUpgradeOptions
@@ -47,11 +50,18 @@ public struct AppTierComponent: View {
                                 tier: tier,
                                 selectedPricing: selectedPricing(for: tier),
                                 isCurrentTier: tier.id == subscription?.appTierId,
+                                currency: catalogCurrency,
                                 onSelectPricing: { pricing in
                                     selectedPricingByTier[tier.id] = pricing.id
                                 },
                                 onSubscribe: { tier, pricing in
-                                    onTierChangeRequested?(tier, pricing)
+                                    onTierChangeRequested?(
+                                        WildwoodPaymentRequiredArgs(
+                                            tier: tier,
+                                            pricing: pricing,
+                                            fallbackCurrency: catalogCurrency
+                                        )
+                                    )
                                 }
                             )
                         }
@@ -110,6 +120,16 @@ public struct AppTierComponent: View {
             return tier.pricingOptions.first { $0.id == id }
         }
         return tier.pricingOptions.first(where: \.isDefault) ?? tier.pricingOptions.first
+    }
+
+    /// The currency the catalog quotes in, for a tier that carries none of its own.
+    private var catalogCurrency: String? {
+        for tier in tiers {
+            if let currency = tier.currency, !currency.trimmingCharacters(in: .whitespaces).isEmpty {
+                return currency
+            }
+        }
+        return nil
     }
 
     private func load() async {

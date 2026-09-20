@@ -9,6 +9,8 @@ public struct TierCard: View {
     let tier: AppTierModel
     let selectedPricing: AppTierPricingModel?
     let isCurrentTier: Bool
+    /// Fallback ISO code for a tier that carries none of its own (the catalog's, or the app's).
+    let currency: String?
     let onSelectPricing: ((AppTierPricingModel) -> Void)?
     let onSubscribe: ((AppTierModel, AppTierPricingModel?) -> Void)?
 
@@ -16,19 +18,26 @@ public struct TierCard: View {
         tier: AppTierModel,
         selectedPricing: AppTierPricingModel? = nil,
         isCurrentTier: Bool = false,
+        currency: String? = nil,
         onSelectPricing: ((AppTierPricingModel) -> Void)? = nil,
         onSubscribe: ((AppTierModel, AppTierPricingModel?) -> Void)? = nil
     ) {
         self.tier = tier
         self.selectedPricing = selectedPricing
         self.isCurrentTier = isCurrentTier
+        self.currency = currency
         self.onSelectPricing = onSelectPricing
         self.onSubscribe = onSubscribe
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            TierCardHeader(tier: tier, selectedPricing: resolvedPricing, isCurrentTier: isCurrentTier)
+            TierCardHeader(
+                tier: tier,
+                selectedPricing: resolvedPricing,
+                isCurrentTier: isCurrentTier,
+                currency: currency
+            )
 
             if tier.pricingOptions.count > 1, let onSelectPricing {
                 Picker("Billing", selection: Binding(
@@ -73,11 +82,19 @@ public struct TierCardHeader: View {
     let tier: AppTierModel
     let selectedPricing: AppTierPricingModel?
     let isCurrentTier: Bool
+    /// Fallback ISO code; the tier's own currency wins when it names one.
+    let currency: String?
 
-    public init(tier: AppTierModel, selectedPricing: AppTierPricingModel?, isCurrentTier: Bool = false) {
+    public init(
+        tier: AppTierModel,
+        selectedPricing: AppTierPricingModel?,
+        isCurrentTier: Bool = false,
+        currency: String? = nil
+    ) {
         self.tier = tier
         self.selectedPricing = selectedPricing
         self.isCurrentTier = isCurrentTier
+        self.currency = currency
     }
 
     public var body: some View {
@@ -112,15 +129,35 @@ public struct TierCardHeader: View {
                     Text("Free").font(.title2.weight(.bold))
                 } else if let pricing = selectedPricing {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(pricing.price, format: .currency(code: "USD"))
+                        // Through the shared formatter, and in the tier's OWN currency: the
+                        // hard-coded "USD" priced a CHF or SEK plan in dollars.
+                        Text(WildwoodMoney.format(pricing.price, currency: resolvedCurrency))
                             .font(.title2.weight(.bold))
                         Text("/ \(pricing.billingFrequencyLabel ?? pricing.billingFrequency)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !trialText.isEmpty {
+                        Text(trialText)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
             }
         }
+    }
+
+    /// The tier's own currency, then the catalog's, then nil — which formats as USD.
+    private var resolvedCurrency: String? {
+        if let own = tier.currency, !own.trimmingCharacters(in: .whitespaces).isEmpty { return own }
+        return currency
+    }
+
+    /// The trial line under the price. Shown only for a paid, non-free plan whose SELECTED
+    /// pricing option starts one — the same gate the web card uses.
+    private var trialText: String {
+        guard let pricing = selectedPricing, !tier.isFreeTier, pricing.price > 0 else { return "" }
+        return WildwoodTrial.label(days: pricing.trialDays)
     }
 
     private func badge(_ text: String) -> some View {

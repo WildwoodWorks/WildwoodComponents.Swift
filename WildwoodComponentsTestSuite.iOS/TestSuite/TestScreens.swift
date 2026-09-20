@@ -125,8 +125,8 @@ struct TestScreenHost: View {
             }
 
         case .appTier:
-            AppTierComponent { tier, pricing in
-                lastEvent = "Change requested: \(tier.name) @ \(pricing?.price ?? 0)"
+            AppTierComponent { args in
+                lastEvent = "Change requested: \(args.tier.name) @ \(args.price)"
             }
 
         case .subscriptionAdmin:

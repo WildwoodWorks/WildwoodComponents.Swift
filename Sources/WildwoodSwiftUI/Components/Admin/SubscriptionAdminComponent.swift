@@ -20,7 +20,10 @@ public struct SubscriptionAdminComponent: View {
 
     private let appId: String?
     private let scope: SubscriptionAdminScope
-    private let onPaymentRequired: ((AppTierModel, AppTierPricingModel?) async -> String?)?
+    /// Collect payment for a plan change. The args carry the pricing MODEL id, the plan's own
+    /// price and its trial days (JS 05dd7cb) — a host that forwards them into `PaymentComponent`
+    /// gets a recurring subscription instead of a one-off prorated charge.
+    private let onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)?
 
     @State private var model: WildwoodSubscriptionAdminModel?
     @State private var selectedPanel: Panel = .status
@@ -28,7 +31,7 @@ public struct SubscriptionAdminComponent: View {
     public init(
         appId: String? = nil,
         scope: SubscriptionAdminScope = .currentUser,
-        onPaymentRequired: ((AppTierModel, AppTierPricingModel?) async -> String?)? = nil
+        onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)? = nil
     ) {
         self.appId = appId
         self.scope = scope
