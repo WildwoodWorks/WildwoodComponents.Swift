@@ -638,7 +638,8 @@ struct SignupViewTests {
         #expect(driver.finishOnWeb == "Finish it on the site.")
         #expect(driver.packsUnavailable == "No packs for you.")
         #expect(driver.statusCreatingAccount == "Making your account.")
-        // The plan-change sentences belong to the manage view's slice and stay at their defaults.
+        // Anything this host did not override keeps the shipped wording — the slices are one type
+        // now, so the whole set travels and only what was named changes.
         #expect(driver.planChangeExpired == RegistrationSubscriptionDriverLabels.defaults.planChangeExpired)
     }
 }

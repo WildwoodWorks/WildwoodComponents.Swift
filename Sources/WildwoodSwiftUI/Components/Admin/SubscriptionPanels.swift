@@ -9,14 +9,27 @@ import WildwoodCore
 
 public struct SubscriptionStatusPanel: View {
     @Bindable var model: WildwoodSubscriptionAdminModel
+    /// False removes the cancel affordance entirely — a surface that does not let this viewer
+    /// cancel (`allowCancel: false` on the manage view).
+    private let allowCancel: Bool
+    /// The host's own cancel, run INSTEAD of the panel's. The manage view supplies one so a refusal
+    /// reaches `onError` with a code and a success refreshes everything the view shows; without one
+    /// the panel cancels through the model, as it always has.
+    private let onCancelRequested: (() -> Void)?
 
     // Statuses from which the user can still cancel. Excluding Trialing/
     // PastDue locked those subscribers out of cancelling entirely; Pending*
     // changes are cancelled via the Plans panel.
     private static let cancellableStatuses: Set<String> = ["Active", "Trialing", "PastDue"]
 
-    public init(model: WildwoodSubscriptionAdminModel) {
+    public init(
+        model: WildwoodSubscriptionAdminModel,
+        allowCancel: Bool = true,
+        onCancelRequested: (() -> Void)? = nil
+    ) {
         self.model = model
+        self.allowCancel = allowCancel
+        self.onCancelRequested = onCancelRequested
     }
 
     public var body: some View {
@@ -94,8 +107,12 @@ public struct SubscriptionStatusPanel: View {
                     .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
                 }
 
-                if !subscription.isFreeTier, Self.cancellableStatuses.contains(subscription.status) {
+                if allowCancel, !subscription.isFreeTier, Self.cancellableStatuses.contains(subscription.status) {
                     Button("Cancel Subscription", role: .destructive) {
+                        if let onCancelRequested {
+                            onCancelRequested()
+                            return
+                        }
                         Task { await model.cancelSubscription() }
                     }
                     .font(.subheadline)
@@ -161,17 +178,37 @@ public struct TierPlansPanel: View {
     /// Collect payment for a plan change. The args carry the pricing MODEL id, the PLAN's price
     /// (never the prorated charge) and the option's trial days, so a host wiring this into
     /// `PaymentComponent` gets a recurring subscription rather than a one-off charge.
+    ///
+    /// Read only on the LEGACY path — the one where this panel drives the change itself. A host
+    /// that supplies ``onSelectTier`` owns the flow, and the same seam lives on that flow.
     let onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)?
+    /// The currency the cards quote in. Nil takes the catalog's own, as it always has.
+    private let currency: String?
+    /// Where a "contact us" plan with no URL of its own sends the viewer.
+    private let contactUrl: String?
+    /// The plan the viewer picked, handed to whoever owns the change.
+    ///
+    /// Supplied, this panel PRICES nothing and confirms nothing: the host's
+    /// ``WildwoodPlanChangeModel`` previews, confirms, takes the card and completes, and this panel
+    /// is a grid again. Omitted, the panel keeps its own preview and confirmation sheet, so a host
+    /// that has always mounted it alone still works.
+    private let onSelectTier: ((PlanChangeSelection) -> Void)?
 
     @State private var selectedPricingByTier: [String: String] = [:]
     @State private var pendingChange: (tier: AppTierModel, pricing: AppTierPricingModel?)?
 
     public init(
         model: WildwoodSubscriptionAdminModel,
-        onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)? = nil
+        onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)? = nil,
+        currency: String? = nil,
+        contactUrl: String? = nil,
+        onSelectTier: ((PlanChangeSelection) -> Void)? = nil
     ) {
         self.model = model
         self.onPaymentRequired = onPaymentRequired
+        self.currency = currency
+        self.contactUrl = contactUrl
+        self.onSelectTier = onSelectTier
     }
 
     public var body: some View {
@@ -181,48 +218,67 @@ public struct TierPlansPanel: View {
                     tier: tier,
                     selectedPricing: selectedPricing(for: tier),
                     isCurrentTier: tier.id == model.subscription?.appTierId,
-                    currency: model.catalogCurrency,
+                    currency: currency ?? model.catalogCurrency,
+                    enterpriseContactUrl: contactUrl,
                     onSelectPricing: { pricing in
                         selectedPricingByTier[tier.id] = pricing.id
                     },
                     onSubscribe: { tier, pricing in
+                        if let onSelectTier {
+                            onSelectTier(
+                                ManageViewRules.planChangeSelection(
+                                    tier: tier,
+                                    pricing: pricing,
+                                    hasSubscription: model.subscription != nil
+                                )
+                            )
+                            return
+                        }
                         pendingChange = (tier, pricing)
                         Task { await model.previewChange(to: tier, pricing: pricing) }
                     }
                 )
             }
         }
+        // The host's flow previews through the same model, so its preview must NOT raise this
+        // panel's own confirmation as well — one change, one confirmation.
         .sheet(isPresented: Binding(
-            get: { model.tierChangePreview != nil },
+            get: { onSelectTier == nil && model.tierChangePreview != nil },
             set: { if !$0 { model.clearPreview() } }
         )) {
             if let preview = model.tierChangePreview, let pending = pendingChange {
-                TierChangeConfirmationSheet(preview: preview, tierName: pending.tier.name) { immediate in
-                    Task {
-                        var transactionId: String?
-                        if preview.paymentRequired, !preview.paymentBypassAllowed, let onPaymentRequired {
-                            transactionId = await onPaymentRequired(
-                                WildwoodPaymentRequiredArgs(
-                                    tier: pending.tier,
-                                    pricing: pending.pricing,
-                                    fallbackCurrency: model.catalogCurrency ?? preview.currency
+                // Written with explicit argument labels rather than trailing closures: the sheet
+                // gained two non-function parameters ahead of these, and a reader should not have
+                // to run the trailing-closure matching rules to see which is which.
+                TierChangeConfirmationSheet(
+                    preview: preview,
+                    tierName: pending.tier.name,
+                    onConfirm: { immediate in
+                        Task {
+                            var transactionId: String?
+                            if preview.paymentRequired, !preview.paymentBypassAllowed, let onPaymentRequired {
+                                transactionId = await onPaymentRequired(
+                                    WildwoodPaymentRequiredArgs(
+                                        tier: pending.tier,
+                                        pricing: pending.pricing,
+                                        fallbackCurrency: model.catalogCurrency ?? preview.currency
+                                    )
                                 )
-                            )
-                            if transactionId == nil {
-                                model.clearPreview()
-                                return
+                                if transactionId == nil {
+                                    model.clearPreview()
+                                    return
+                                }
                             }
+                            await model.changeTier(
+                                to: pending.tier,
+                                pricing: pending.pricing,
+                                immediate: immediate,
+                                paymentTransactionId: transactionId
+                            )
                         }
-                        await model.changeTier(
-                            to: pending.tier,
-                            pricing: pending.pricing,
-                            immediate: immediate,
-                            paymentTransactionId: transactionId
-                        )
-                    }
-                } onCancel: {
-                    model.clearPreview()
-                }
+                    },
+                    onCancel: { model.clearPreview() }
+                )
             }
         }
     }
@@ -238,6 +294,13 @@ public struct TierPlansPanel: View {
 struct TierChangeConfirmationSheet: View {
     let preview: TierChangePreviewModel
     let tierName: String
+    /// Said INSTEAD of the server's proration figures when a device store owns the billing
+    /// (Decision 5 / Appendix C DD-4). The store prices and bills its own subscriptions, so a
+    /// prorated charge quoted here is a number nobody can honour.
+    var storeBillingNotice: String? = nil
+    /// A change is being posted: the buttons stop taking taps so one confirmation cannot be sent
+    /// twice.
+    var busy: Bool = false
     let onConfirm: (Bool) -> Void
     let onCancel: () -> Void
 
@@ -251,14 +314,20 @@ struct TierChangeConfirmationSheet: View {
                     row("Current plan", "\(current) (\(formatted(preview.currentPrice)))")
                 }
                 row("New plan", "\(preview.newTierName ?? tierName) (\(formatted(preview.newPrice)))")
-                if let prorated = preview.proratedChargeToday, prorated > 0 {
-                    row("Charged today", formatted(prorated))
-                }
-                if let credit = preview.creditAmount, credit > 0 {
-                    row("Credit applied", formatted(credit))
-                }
-                if let nextAmount = preview.nextBillingAmount, let nextDate = preview.nextBillingDate {
-                    row("Next billing", "\(formatted(nextAmount)) on \(nextDate.formatted(date: .abbreviated, time: .omitted))")
+                if let storeBillingNotice {
+                    Label(storeBillingNotice, systemImage: "applelogo")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    if let prorated = preview.proratedChargeToday, prorated > 0 {
+                        row("Charged today", formatted(prorated))
+                    }
+                    if let credit = preview.creditAmount, credit > 0 {
+                        row("Credit applied", formatted(credit))
+                    }
+                    if let nextAmount = preview.nextBillingAmount, let nextDate = preview.nextBillingDate {
+                        row("Next billing", "\(formatted(nextAmount)) on \(nextDate.formatted(date: .abbreviated, time: .omitted))")
+                    }
                 }
                 if !preview.featuresGained.isEmpty {
                     Label("Gains: \(preview.featuresGained.joined(separator: ", "))", systemImage: "plus.circle")
@@ -286,6 +355,7 @@ struct TierChangeConfirmationSheet: View {
                         Text("Change Now").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(busy)
                 }
                 if preview.allowScheduledChange {
                     Button {
@@ -294,10 +364,12 @@ struct TierChangeConfirmationSheet: View {
                         Text("Change at Period End").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.bordered)
+                    .disabled(busy)
                 }
                 Button("Cancel") { onCancel() }
                     .font(.footnote)
                     .frame(maxWidth: .infinity)
+                    .disabled(busy)
             }
             .padding()
             .navigationTitle("Confirm Change")
@@ -401,6 +473,21 @@ public struct AddOnsPanel: View {
     @Bindable var model: WildwoodSubscriptionAdminModel
     private let labels: AddOnsPanelLabels
     private let allowCancel: Bool
+    /// The per-row one-click Subscribe, which buys a pack through the direct subscribe endpoint.
+    ///
+    /// False on the manage view, which buys packs through the pack picker's quoted checkout
+    /// instead — the web's manage view passes no `onSubscribe` for exactly that reason, and two
+    /// ways to buy the same pack, priced differently, is one too many. True everywhere else, so
+    /// the admin container keeps the affordance it has always had.
+    private let allowDirectSubscribe: Bool
+    /// Opens the host's pack picker. Omitted, no "Add packs" is offered — which is also how an
+    /// App-Store-exclusive app renders, since a pack has no in-app-purchase product behind it.
+    private let onAddPacks: (() -> Void)?
+    /// Raised after a row's mutation lands, with the reason the entitlement cache was dropped for.
+    /// The model has already invalidated it; this is the host's own notification.
+    private let onChanged: ((EntitlementsChangedReason) -> Void)?
+    /// Raised when a row's mutation was refused, with a stable code.
+    private let onError: ((RegistrationSubscriptionError) -> Void)?
 
     /// The last refused action, in the server's own words. Cleared when the next attempt starts,
     /// so a retry never shows a stale message.
@@ -413,17 +500,32 @@ public struct AddOnsPanel: View {
     public init(
         model: WildwoodSubscriptionAdminModel,
         labels: AddOnsPanelLabels = AddOnsPanelLabels(),
-        allowCancel: Bool = true
+        allowCancel: Bool = true,
+        allowDirectSubscribe: Bool = true,
+        onAddPacks: (() -> Void)? = nil,
+        onChanged: ((EntitlementsChangedReason) -> Void)? = nil,
+        onError: ((RegistrationSubscriptionError) -> Void)? = nil
     ) {
         self.model = model
         self.labels = labels
         self.allowCancel = allowCancel
+        self.allowDirectSubscribe = allowDirectSubscribe
+        self.onAddPacks = onAddPacks
+        self.onChanged = onChanged
+        self.onError = onError
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !actionError.isEmpty {
                 ErrorBannerView(message: actionError) { actionError = "" }
+            }
+
+            if let onAddPacks {
+                Button(labels.addPacks) { onAddPacks() }
+                    .buttonStyle(.bordered)
+                    .font(.subheadline)
+                    .accessibilityIdentifier(RegistrationSubscriptionTestID.addPacks)
             }
 
             if !ownedRows.isEmpty {
@@ -536,7 +638,7 @@ public struct AddOnsPanel: View {
             }
             if bundled {
                 badge("Included in Plan", color: .blue)
-            } else if !model.requiresAppStorePayment {
+            } else if allowDirectSubscribe, !model.requiresAppStorePayment {
                 // Apple owns billing in an App-Store-exclusive app and packs have no in-app
                 // purchase product mapping, so there is nothing to offer here.
                 let subscribeLabel: String = processingId == addOn.id ? "Subscribing\u{2026}" : "Subscribe"
@@ -626,11 +728,21 @@ public struct AddOnsPanel: View {
                 // End of the paid period, not immediately: the row keeps access until then.
                 ok = await model.cancelAddOn(sub, immediate: false)
             }
-            if !ok {
+            if ok {
+                onChanged?(action == .reactivate ? .reactivate : .cancel)
+            } else {
                 actionError = AddOnRowRules.failureMessage(
                     action,
                     name: sub.addOnName,
                     serverMessage: model.errorMessage.isEmpty ? nil : model.errorMessage
+                )
+                onError?(
+                    RegistrationSubscriptionError(
+                        code: action == .reactivate
+                            ? RegistrationSubscriptionErrorCodes.packReactivateFailed
+                            : RegistrationSubscriptionErrorCodes.packCancelFailed,
+                        message: actionError
+                    )
                 )
             }
             processingId = nil
@@ -643,11 +755,19 @@ public struct AddOnsPanel: View {
         processingId = addOn.id
         Task {
             let ok = await model.subscribeToAddOn(addOn, pricing: pricing)
-            if !ok {
+            if ok {
+                onChanged?(.addOn)
+            } else {
                 actionError = AddOnRowRules.failureMessage(
                     .subscribe,
                     name: addOn.name,
                     serverMessage: model.errorMessage.isEmpty ? nil : model.errorMessage
+                )
+                onError?(
+                    RegistrationSubscriptionError(
+                        code: RegistrationSubscriptionErrorCodes.packCheckoutFailed,
+                        message: actionError
+                    )
                 )
             }
             processingId = nil
@@ -660,20 +780,26 @@ public struct AddOnsPanel: View {
 public struct UsageLimitsPanel: View {
     @Bindable var model: WildwoodSubscriptionAdminModel
     @Environment(\.wildwoodTheme) private var theme
+    /// The rows to render, when the host merged its own real-time usage over the server's
+    /// (`onMergeUsage`). Nil — the default — renders the server's own statuses.
+    private let statuses: [AppTierLimitStatusModel]?
 
     @State private var editingLimit: AppTierLimitStatusModel?
     @State private var newMaxValue = ""
 
-    public init(model: WildwoodSubscriptionAdminModel) {
+    public init(model: WildwoodSubscriptionAdminModel, statuses: [AppTierLimitStatusModel]? = nil) {
         self.model = model
+        self.statuses = statuses
     }
 
     public var body: some View {
+        let rows: [AppTierLimitStatusModel] = statuses ?? model.limitStatuses
+
         VStack(alignment: .leading, spacing: 12) {
-            if model.limitStatuses.isEmpty {
+            if rows.isEmpty {
                 ContentUnavailableView("No usage limits", systemImage: "gauge")
             } else {
-                ForEach(model.limitStatuses) { status in
+                ForEach(rows) { status in
                     VStack(alignment: .leading, spacing: 4) {
                         UsageLimitRow(status: status, theme: theme)
                         if model.scope.isAdmin {

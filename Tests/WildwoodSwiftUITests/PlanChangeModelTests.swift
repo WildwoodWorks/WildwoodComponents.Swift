@@ -19,6 +19,13 @@ struct PlanChangeModelTests {
     private var completePath: String { "/api/app-tiers/\(Self.appId)/my-subscription/change/pc-1/complete" }
     private var paymentConfigPath: String { "/api/payment/configuration/\(Self.appId)" }
 
+    /// The four reads one settlement runs: the subscription, the feature definitions and the
+    /// entitlement map, and the usage limits.
+    private var statusPath: String { "/api/app-tiers/\(Self.appId)/my-subscription" }
+    private var definitionsPath: String { "/api/app-feature-definitions/\(Self.appId)/active" }
+    private var featuresPath: String { "/api/app-tiers/\(Self.appId)/user-features" }
+    private var limitsPath: String { "/api/app-tiers/\(Self.appId)/limit-statuses" }
+
     /// Decoded rather than constructed, so the fixture stays honest about what the server sends.
     private func tier(_ id: String = "tier-pro", free: Bool = false) throws -> AppTierModel {
         let json = """
@@ -66,6 +73,15 @@ struct PlanChangeModelTests {
         _ backend: TestBackend,
         handler: (any WildwoodPaymentActionHandler)?
     ) -> WildwoodPlanChangeModel {
+        makeDriver(backend, handler: handler).model
+    }
+
+    /// The driver AND the client it settles through — what the counting tests below need, because
+    /// "settled once" is a fact about the shared ``FeatureStore`` and the shared event bus.
+    private func makeDriver(
+        _ backend: TestBackend,
+        handler: (any WildwoodPaymentActionHandler)?
+    ) -> (model: WildwoodPlanChangeModel, client: WildwoodClient) {
         let client = makeTestClient(backend, appId: Self.appId)
         let admin = WildwoodSubscriptionAdminModel(client: client, appId: Self.appId, scope: .currentUser)
         let model = WildwoodPlanChangeModel(
@@ -75,7 +91,48 @@ struct PlanChangeModelTests {
             issuer: StepTokenIssuer()
         )
         model.completeRetryDelay = .zero
-        return model
+        return (model, client)
+    }
+
+    /// Everything the shared bus carried, as `appId|reason`. The subscription is deliberately
+    /// dropped: it unsubscribes only when cancelled, and this one listens for the whole test.
+    private func entitlementEvents(_ client: WildwoodClient) -> Recorder<String> {
+        let seen = Recorder<String>()
+        client.events.on { event in
+            if case .entitlementsChanged(let appId, let reason) = event {
+                seen.record("\(appId)|\(reason.rawValue)")
+            }
+        }
+        return seen
+    }
+
+    /// The reads a settlement makes. Stubbed so a settlement that ran twice is counted twice
+    /// rather than failing differently the second time.
+    private func stubReloads(_ backend: TestBackend) {
+        backend.stub(
+            "GET",
+            statusPath,
+            TestStubResponse(
+                json: """
+                {"id":"sub-1","appId":"\(Self.appId)","appTierId":"tier-pro","status":"Active"}
+                """
+            )
+        )
+        backend.stub("GET", definitionsPath, TestStubResponse(json: "[]"))
+        backend.stub("GET", featuresPath, TestStubResponse(json: #"{"PRO":true}"#))
+        backend.stub("GET", limitsPath, TestStubResponse(json: "[]"))
+    }
+
+    /// How many settlements the backend has actually seen. The limits read is the LAST of the
+    /// three a settlement runs, so counting it counts settlements that ran to the end.
+    private func settlements(_ backend: TestBackend) -> Int {
+        requestCount(backend, path: limitsPath)
+    }
+
+    /// Give a settlement beyond `count` every chance to land before it is ruled out — the bug
+    /// these tests pin is a second settlement arriving a moment after the first.
+    private func waitForSettlements(beyond count: Int, _ backend: TestBackend) async {
+        await waitUntil(timeout: 0.3) { settlements(backend) > count }
     }
 
     // MARK: - The seam
@@ -168,6 +225,160 @@ struct PlanChangeModelTests {
 
         #expect(model.error == "Your bank said no.")
         #expect(requestCount(backend, path: completePath) == 0)
+    }
+
+    // MARK: - One change, one settlement
+
+    // A plan change moves the plan ONCE, so everything downstream of it must happen once: the
+    // shared FeatureStore's epoch bumps by one (mounted FeatureGates re-read exactly once),
+    // `entitlementsChanged` reaches the host's other subscribers once, and the three things a plan
+    // move changes are re-read once. The driver owns that settlement end to end — which is why it
+    // posts the change with `settles: false` — and the surfaces hosting it add no reload of their
+    // own.
+
+    @Test func aSuccessfulChangeSettlesExactlyOnce() async throws {
+        let backend = TestBackend()
+        stubPreview(backend)
+        stubReloads(backend)
+        backend.stub("POST", changePath, TestStubResponse(json: #"{"success":true,"errorMessage":""}"#))
+
+        let (model, client) = makeDriver(backend, handler: nil)
+        let events = entitlementEvents(client)
+        let epochBefore: Int = client.features.epoch
+
+        model.selectTier(try selection())
+        await waitUntil { model.step == .confirm }
+        model.confirm(immediate: true, bypassPayment: true)
+        await waitUntil { model.step == .done || model.step == .failed }
+        await waitUntil { settlements(backend) > 0 }
+        await waitForSettlements(beyond: 1, backend)
+
+        #expect(model.step == .done)
+        #expect(client.features.epoch == epochBefore + 1)
+        #expect(events.values == ["\(Self.appId)|tierChange"])
+        #expect(requestCount(backend, path: statusPath) == 1)
+        #expect(requestCount(backend, path: definitionsPath) == 1)
+        #expect(requestCount(backend, path: featuresPath) == 1)
+        #expect(requestCount(backend, path: limitsPath) == 1)
+    }
+
+    @Test func aChangeCompletedAfterTheBankSettlesExactlyOnce() async throws {
+        let backend = TestBackend()
+        stubPreview(backend)
+        stubPaymentConfig(backend)
+        stubReloads(backend)
+        backend.stub(
+            "POST",
+            changePath,
+            TestStubResponse(
+                json: """
+                {"success":false,"requiresAction":true,"clientSecret":"cs_1","pendingChangeId":"pc-1",
+                 "errorMessage":""}
+                """
+            )
+        )
+        backend.stub("POST", completePath, TestStubResponse(json: #"{"success":true,"errorMessage":""}"#))
+
+        let (model, client) = makeDriver(backend, handler: RecordingPaymentActionHandler())
+        let events = entitlementEvents(client)
+        let epochBefore: Int = client.features.epoch
+
+        model.selectTier(try selection())
+        await waitUntil { model.step == .confirm }
+        model.confirm(immediate: true, bypassPayment: true)
+        await waitUntil { model.step == .done || model.step == .failed }
+        await waitUntil { settlements(backend) > 0 }
+        await waitForSettlements(beyond: 1, backend)
+
+        #expect(model.step == .done)
+        // The change was posted AND completed — two calls the admin model would each have settled.
+        #expect(requestCount(backend, path: completePath) == 1)
+        #expect(client.features.epoch == epochBefore + 1)
+        #expect(events.values == ["\(Self.appId)|tierChange"])
+        #expect(requestCount(backend, path: statusPath) == 1)
+        #expect(requestCount(backend, path: featuresPath) == 1)
+        #expect(requestCount(backend, path: limitsPath) == 1)
+    }
+
+    @Test func aParkedChangeSettlesNothingBecauseThePlanHasNotMovedYet() async throws {
+        let backend = TestBackend()
+        stubPreview(backend)
+        stubReloads(backend)
+        backend.stub(
+            "POST",
+            changePath,
+            TestStubResponse(
+                json: """
+                {"success":false,"requiresAction":true,"clientSecret":"cs_1","pendingChangeId":"pc-1",
+                 "errorMessage":""}
+                """
+            )
+        )
+
+        // No handler: the change parks and nothing here can answer the bank, so it stops.
+        let (model, client) = makeDriver(backend, handler: nil)
+        let events = entitlementEvents(client)
+        let epochBefore: Int = client.features.epoch
+
+        model.selectTier(try selection())
+        await waitUntil { model.step == .confirm }
+        model.confirm(immediate: true, bypassPayment: true)
+        await waitUntil { model.step == .failed }
+        await waitForSettlements(beyond: 0, backend)
+
+        // Nothing changed, so nothing is announced and nothing is re-read.
+        #expect(client.features.epoch == epochBefore)
+        #expect(events.isEmpty)
+        #expect(requestCount(backend, path: statusPath) == 0)
+        #expect(requestCount(backend, path: featuresPath) == 0)
+        #expect(requestCount(backend, path: limitsPath) == 0)
+    }
+
+    @Test func aDrainedChangeStillSettlesExactlyOnceWithNoViewLeft() async throws {
+        let backend = TestBackend()
+        stubPreview(backend)
+        stubPaymentConfig(backend)
+        stubReloads(backend)
+        backend.stub(
+            "POST",
+            changePath,
+            TestStubResponse(
+                json: """
+                {"success":false,"requiresAction":true,"clientSecret":"cs_1","pendingChangeId":"pc-1",
+                 "errorMessage":""}
+                """
+            )
+        )
+        backend.stub("POST", completePath, TestStubResponse(json: #"{"success":true,"errorMessage":""}"#))
+
+        let gate = GatedPaymentActionHandler()
+        let (model, client) = makeDriver(backend, handler: gate)
+        let events = entitlementEvents(client)
+        let epochBefore: Int = client.features.epoch
+
+        model.selectTier(try selection())
+        await waitUntil { model.step == .confirm }
+        model.confirm(immediate: true, bypassPayment: true)
+        await waitUntil { gate.wasAsked }
+
+        model.detach()
+        gate.open()
+
+        await waitUntil { settlements(backend) > 0 }
+        await waitForSettlements(beyond: 1, backend)
+
+        // The host callbacks are gone, so the driver is the ONLY thing left that can settle — and
+        // it settles once, not once per server call.
+        #expect(requestCount(backend, path: completePath) == 1)
+        #expect(client.features.epoch == epochBefore + 1)
+        #expect(events.values == ["\(Self.appId)|tierChange"])
+        #expect(requestCount(backend, path: statusPath) == 1)
+        #expect(settlements(backend) == 1)
+        // A second detach neither settles again nor undoes anything.
+        model.detach()
+        await waitForSettlements(beyond: 1, backend)
+        #expect(client.features.epoch == epochBefore + 1)
+        #expect(events.count == 1)
     }
 
     // MARK: - The bounded completion retry

@@ -45,6 +45,17 @@ public enum RegistrationSubscriptionTestID {
         "group:" + groupId
     }
 
+    /// One manage section: the stacked page's section, and the tab that opens it. The web's
+    /// `data-ww-section`.
+    public static func section(_ section: ManageSection) -> String {
+        "section:" + section.rawValue
+    }
+
+    /// One of the two sheets the manage view puts over itself. The web's `data-ww-modal`.
+    public static func modal(_ modal: String) -> String {
+        "modal:" + modal
+    }
+
     /// The button that loads the catalog again after a failure.
     public static let retryButton: String = "pricing-retry"
     /// The placeholder shown while the catalog loads.
@@ -86,4 +97,20 @@ public enum RegistrationSubscriptionTestID {
     public static let packCheckoutSkip: String = "pack-checkout-skip"
     /// What became of each pack.
     public static let packOutcomes: String = "pack-outcomes"
+
+    // MARK: Manage
+
+    /// The card sheet a plan change opens when the host brought no sheet of its own. The web's
+    /// `data-ww-modal="payment"`.
+    public static let paymentModal: String = "modal:payment"
+    /// The pack picker the packs panel opens. The web's `data-ww-modal="packs"`.
+    public static let packsModal: String = "modal:packs"
+    /// Opens that picker.
+    public static let addPacks: String = "add-packs"
+    /// What a plan change says about itself while it is running, or after it failed.
+    public static let planChangeNotice: String = "plan-change-notice"
+    /// Runs the failed plan-change step again.
+    public static let planChangeRetry: String = "plan-change-retry"
+    /// Abandons a failed or unfinishable plan change.
+    public static let planChangeDismiss: String = "plan-change-dismiss"
 }

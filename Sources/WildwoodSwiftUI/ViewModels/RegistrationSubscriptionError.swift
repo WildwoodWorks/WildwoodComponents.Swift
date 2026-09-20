@@ -47,6 +47,15 @@ public enum RegistrationSubscriptionErrorCodes {
     /// The basket could not be bought.
     public static let packCheckoutFailed = "pack_checkout_failed"
 
+    /// A payment went through but carried no id to complete the plan change with.
+    public static let paymentUnconfirmed = "payment_unconfirmed"
+    /// The subscription could not be cancelled.
+    public static let subscriptionCancelFailed = "subscription_cancel_failed"
+    /// A pack could not be cancelled.
+    public static let packCancelFailed = "pack_cancel_failed"
+    /// A scheduled pack cancellation could not be taken back.
+    public static let packReactivateFailed = "pack_reactivate_failed"
+
     /// The plan change could not be priced.
     public static let tierPreviewFailed = "tier_preview_failed"
     /// The prorated charge could not be confirmed with the bank.

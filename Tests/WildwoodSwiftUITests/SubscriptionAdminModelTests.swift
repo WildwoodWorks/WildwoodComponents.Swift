@@ -117,6 +117,53 @@ struct SubscriptionAdminModelTests {
         #expect(sent.contains("\"SupportsPaymentAction\":true"))
     }
 
+    /// The LEGACY direct path — a host, or the older panels, calling the model with no
+    /// ``WildwoodPlanChangeModel`` anywhere. Nobody else can settle the change, so this model
+    /// still does: one invalidation, one `entitlementsChanged`, one read of each of the three
+    /// things a plan move changes. (Driven by the driver instead, it is asked with
+    /// `settles: false` and the driver settles once — `PlanChangeModelTests`.)
+    @Test func theDirectPathStillSettlesAChangeExactlyOnce() async {
+        let backend = TestBackend()
+        backend.stub(
+            "POST",
+            "/api/app-tiers/app-1/my-subscription/change",
+            TestStubResponse(json: #"{"success":true,"errorMessage":""}"#)
+        )
+        backend.stub(
+            "GET",
+            "/api/app-tiers/app-1/my-subscription",
+            TestStubResponse(json: #"{"id":"sub-1","appId":"app-1","appTierId":"tier-pro","status":"Active"}"#)
+        )
+        backend.stub("GET", "/api/app-feature-definitions/app-1/active", TestStubResponse(json: "[]"))
+        backend.stub("GET", "/api/app-tiers/app-1/user-features", TestStubResponse(json: #"{"PRO":true}"#))
+        backend.stub("GET", "/api/app-tiers/app-1/limit-statuses", TestStubResponse(json: "[]"))
+
+        let client = makeTestClient(backend, appId: "app-1")
+        let model = WildwoodSubscriptionAdminModel(client: client, appId: "app-1", scope: .currentUser)
+        let seen = Recorder<String>()
+        client.events.on { event in
+            if case .entitlementsChanged(let appId, let reason) = event {
+                seen.record("\(appId)|\(reason.rawValue)")
+            }
+        }
+        let epochBefore: Int = client.features.epoch
+
+        let result = await model.postTierChange(
+            tierId: "tier-pro",
+            pricingId: "p-1",
+            tierName: "Pro",
+            isChange: true,
+            immediate: true
+        )
+
+        #expect(result.success == true)
+        #expect(client.features.epoch == epochBefore + 1)
+        #expect(seen.values == ["app-1|tierChange"])
+        #expect(requestCount(backend, path: "/api/app-tiers/app-1/my-subscription") == 1)
+        #expect(requestCount(backend, path: "/api/app-tiers/app-1/user-features") == 1)
+        #expect(requestCount(backend, path: "/api/app-tiers/app-1/limit-statuses") == 1)
+    }
+
     @Test func aRefusedChangeKeepsTheServersReason() async {
         let backend = TestBackend()
         backend.stub(

@@ -75,7 +75,9 @@ public final class WildwoodPlanChangeModel {
     /// The host's own card sheet. Given one, it is used INSTEAD of the built-in sheet and its
     /// answer is final: a transaction id completes the change, nil abandons it.
     @ObservationIgnored public var onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)?
-    /// Reload whatever shows the subscription, once a change has landed.
+    /// Reload whatever ELSE shows the subscription, once a change has landed. The admin model this
+    /// driver was built on has already been reloaded by then (see ``settleChange()``), so a host
+    /// that reloads it again here fetches everything twice.
     @ObservationIgnored public var onChanged: (() async -> Void)?
     /// Told after a change lands, so the host can refresh its own gates.
     @ObservationIgnored public var onEntitlementsChanged: ((EntitlementsChangedReason) -> Void)?
@@ -99,7 +101,9 @@ public final class WildwoodPlanChangeModel {
     @ObservationIgnored private var paymentAsked: Bool = false
     @ObservationIgnored private var doneHandled: Bool = false
     @ObservationIgnored private var failureReported: Bool = false
-    @ObservationIgnored private var entitlementsInvalidated: Bool = false
+    /// The change that landed has been settled — see ``settleChange()``. Armed again by the next
+    /// ``selectTier(_:)``, so a second change settles on its own account.
+    @ObservationIgnored private var changeSettled: Bool = false
     /// The view has gone. See ``detach()``: detach is not stop.
     @ObservationIgnored private var detached: Bool = false
     @ObservationIgnored private var detachFinished: Bool = false
@@ -128,6 +132,10 @@ public final class WildwoodPlanChangeModel {
     public var preview: TierChangePreviewModel? {
         state.step == .confirm ? state.preview : nil
     }
+
+    /// The plan the change is moving to, while one is in flight. The confirmation and the card
+    /// sheet name it, and the preview's own `newTierName` is not always filled in.
+    public var selectedTier: AppTierModel? { selection?.tier }
 
     /// What the BUILT-IN card sheet should collect, or nil — either because no card is needed right
     /// now, or because the host brought its own sheet.
@@ -179,7 +187,7 @@ public final class WildwoodPlanChangeModel {
     /// Price the chosen plan and open the confirmation.
     public func selectTier(_ selection: PlanChangeSelection) {
         self.selection = selection
-        entitlementsInvalidated = false
+        changeSettled = false
         admin.clearMessages()
         dispatch(
             .previewRequested(
@@ -241,8 +249,8 @@ public final class WildwoodPlanChangeModel {
     /// Abandoning that answer would charge the card and then never complete the parked change, so
     /// the proration is paid and the plan never moves, with no message either way. An authenticated
     /// change is therefore DRAINED — server-side only, no state callback, no host callback —
-    /// through its completion, and the entitlement cache is dropped afterwards because the plan
-    /// really did change. See ``mayRunNextStep()``.
+    /// through its completion, and SETTLED afterwards (``settleChange()``) because the plan really
+    /// did change: once, the same once an attached change gets. See ``mayRunNextStep()``.
     ///
     /// Never waits on anything, and idempotent. The drain runs on a `Task` this model owns, so a
     /// SwiftUI `.task` being cancelled on disappear cannot take it with it.
@@ -316,8 +324,8 @@ public final class WildwoodPlanChangeModel {
     ///
     /// Attached, always. Detached, only the two steps that are pure consequences of money that has
     /// ALREADY moved: `completing` (the bank said yes, and completing is what turns that into the
-    /// new plan) and `done` (the entitlement cache still has to be dropped). Everything else needs
-    /// a person who has left.
+    /// new plan) and `done` (the change still has to be settled). Everything else needs a person
+    /// who has left.
     private func mayRunNextStep() -> Bool {
         if !detached { return true }
         switch state.step {
@@ -413,6 +421,10 @@ public final class WildwoodPlanChangeModel {
 
     /// Post the change. `SupportsPaymentAction` goes up ONLY when a handler exists: without one
     /// nothing here can answer a challenge, so the server must refuse rather than park.
+    ///
+    /// `settles: false`: this driver owns the settlement for the whole change (``settleChange()``).
+    /// A success here is not necessarily the end of it — a parked change still has a challenge and
+    /// a completion to run — and a change settled twice drops the entitlement cache twice.
     private func runChange(_ token: StepToken, immediate: Bool, paymentTransactionId: String?) async {
         guard let chosen = selection else { return }
         let result: AppTierChangeResultModel = await admin.postTierChange(
@@ -422,7 +434,8 @@ public final class WildwoodPlanChangeModel {
             isChange: chosen.isChange,
             immediate: immediate,
             paymentTransactionId: paymentTransactionId,
-            supportsPaymentAction: supportsPaymentAction
+            supportsPaymentAction: supportsPaymentAction,
+            settles: false
         )
         apply(.changeResult(token: token, result: result))
     }
@@ -473,14 +486,20 @@ public final class WildwoodPlanChangeModel {
             try? await Task.sleep(for: completeRetryDelay)
         }
 
-        let result: AppTierChangeResultModel = await admin.completeTierChange(pendingChangeId: pendingChangeId)
+        // `settles: false` for the same reason the change itself is posted that way: a completion
+        // may answer `processing` and be asked again, and only ``runDone()`` knows it is over.
+        let result: AppTierChangeResultModel = await admin.completeTierChange(
+            pendingChangeId: pendingChangeId,
+            settles: false
+        )
         apply(.completeResult(token: token, result: result))
     }
 
-    /// The change landed. The entitlement cache goes first so anything the refresh triggers reads
-    /// the new plan, then the host reloads, then the host's own callback is told why.
+    /// The change landed. It is settled first — the entitlement cache dropped and the subscription
+    /// state re-read — so anything the host refreshes next reads the new plan; then the host
+    /// reloads whatever ELSE it shows, and is told why last.
     private func runDone() async {
-        invalidateEntitlements()
+        await settleChange()
 
         if let changed = onChanged {
             await changed()
@@ -531,21 +550,39 @@ public final class WildwoodPlanChangeModel {
         return publishableKey
     }
 
-    /// Drop the shared entitlement cache for the change that landed. Once per change, whether the
-    /// view was still there or the change was drained after teardown: a plan that moved while a
-    /// FeatureGate holds the old answer is a customer paying for something they cannot see.
-    private func invalidateEntitlements() {
-        if entitlementsInvalidated { return }
-        entitlementsInvalidated = true
-        admin.invalidateEntitlements(.tierChange)
+    /// Settle the change that landed: drop the shared entitlement cache and re-read the
+    /// subscription state the plan move changed, through
+    /// ``WildwoodSubscriptionAdminModel/applyTierChangeSettlement()``.
+    ///
+    /// THIS DRIVER OWNS THE SETTLEMENT for every change it runs — which is why it posts and
+    /// completes with `settles: false`. The admin model cannot own it: it is handed one HTTP call
+    /// at a time and cannot tell a parked change from a finished one, so settling there would
+    /// announce a plan that has not moved yet, and settling in both places drops the cache twice
+    /// (epoch +2, `entitlementsChanged` twice) for one change.
+    ///
+    /// Once per change, whether the view was still there or the change drained after teardown: a
+    /// plan that moved while a FeatureGate holds the old answer is a customer paying for something
+    /// they cannot see.
+    private func settleChange() async {
+        if changeSettled { return }
+        changeSettled = true
+        await admin.applyTierChangeSettlement()
     }
 
-    /// The end of a detached run: settle the entitlement cache for anything the drain landed.
-    /// Runs exactly once, from whichever of ``detach()`` and the pump gets there last.
+    /// The end of a detached run. Runs exactly once, from whichever of ``detach()`` and the pump
+    /// gets there last.
+    ///
+    /// A drained change settles in ``runDone()``, which the pump reaches for `.done` whether this
+    /// driver is attached or not (see ``mayRunNextStep()``). This is the last-resort cache drop
+    /// for a `.done` that was never pumped: dropping the cache is synchronous and safe during
+    /// teardown, where awaiting three reloads for a screen that has gone is not.
     private func finishDetached() {
         if detachFinished { return }
         detachFinished = true
-        if state.step == .done { invalidateEntitlements() }
+        if state.step == .done && !changeSettled {
+            changeSettled = true
+            admin.invalidateEntitlements(.tierChange)
+        }
     }
 
     private func report(_ code: String, _ message: String) {

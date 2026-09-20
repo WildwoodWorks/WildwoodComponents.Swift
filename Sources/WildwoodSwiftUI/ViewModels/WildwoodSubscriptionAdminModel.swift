@@ -247,6 +247,12 @@ public final class WildwoodSubscriptionAdminModel {
     /// Never throws: a transport failure comes back as an unsuccessful result, so the caller's
     /// state machine reads one shape. `requiresAction` and `processing` mean "not yet", not
     /// "refused", and are NOT surfaced as errors.
+    ///
+    /// `settles` names who owns "the change landed" — see ``applyTierChangeSettlement()``. True,
+    /// the default, is the direct path: this model drops the entitlement cache and reloads.
+    /// ``WildwoodPlanChangeModel`` passes false because the change it posts is not necessarily
+    /// finished — a bank challenge and a completion may still be to come — and it settles once,
+    /// itself, when the change is really done.
     @discardableResult
     public func postTierChange(
         tierId: String,
@@ -255,7 +261,8 @@ public final class WildwoodSubscriptionAdminModel {
         isChange: Bool,
         immediate: Bool,
         paymentTransactionId: String? = nil,
-        supportsPaymentAction: Bool = false
+        supportsPaymentAction: Bool = false,
+        settles: Bool = true
     ) async -> AppTierChangeResultModel {
         clearMessages()
         do {
@@ -267,7 +274,12 @@ public final class WildwoodSubscriptionAdminModel {
                 paymentTransactionId: paymentTransactionId,
                 supportsPaymentAction: supportsPaymentAction
             )
-            await settleTierChange(result, operation: "change the plan", tierName: tierName)
+            await settleTierChange(
+                result,
+                operation: "change the plan",
+                tierName: tierName,
+                settles: settles
+            )
             return result
         } catch {
             let message: String = (error as? WildwoodError)?.message ?? error.localizedDescription
@@ -279,14 +291,25 @@ public final class WildwoodSubscriptionAdminModel {
     /// Finish a plan change the server parked on a bank challenge. Safe to repeat — the server
     /// verifies the payment with the processor before it moves anything — and `processing` is
     /// answered as data, not as an error.
+    ///
+    /// `settles` is the same ownership switch `postTierChange` carries: false leaves the
+    /// settlement to the driver that ran the change (see ``applyTierChangeSettlement()``).
     @discardableResult
-    public func completeTierChange(pendingChangeId: String) async -> AppTierChangeResultModel {
+    public func completeTierChange(
+        pendingChangeId: String,
+        settles: Bool = true
+    ) async -> AppTierChangeResultModel {
         clearMessages()
         do {
             let result: AppTierChangeResultModel = try await client.appTier.completeTierChange(
                 appId: appId, pendingChangeId: pendingChangeId
             )
-            await settleTierChange(result, operation: "complete the plan change", tierName: nil)
+            await settleTierChange(
+                result,
+                operation: "complete the plan change",
+                tierName: nil,
+                settles: settles
+            )
             return result
         } catch {
             let message: String = (error as? WildwoodError)?.message ?? error.localizedDescription
@@ -377,11 +400,13 @@ public final class WildwoodSubscriptionAdminModel {
     }
 
     /// Read a change or completion answer: success refreshes, a "not yet" says nothing, and a real
-    /// refusal keeps the server's own words.
+    /// refusal keeps the server's own words. `settles` false keeps the message and drops the
+    /// stale preview but leaves the settlement to the caller that owns the whole change.
     private func settleTierChange(
         _ result: AppTierChangeResultModel,
         operation: String,
-        tierName: String?
+        tierName: String?,
+        settles: Bool
     ) async {
         if result.success {
             let planName: String = tierName ?? "your new plan"
@@ -389,18 +414,37 @@ public final class WildwoodSubscriptionAdminModel {
                 ? "Tier change scheduled for \(result.effectiveDate?.formatted(date: .abbreviated, time: .omitted) ?? "the next billing period")."
                 : "Tier changed to \(planName)."
             tierChangePreview = nil
-            invalidateEntitlements(.tierChange)
-            await loadStatus()
-            await loadFeatures()
-            await loadLimits()
+            if settles { await applyTierChangeSettlement() }
             return
         }
 
         // `requiresAction` and `processing` arrive with `success == false` and are the 3-D Secure
         // path, not a refusal: reporting them as errors tells a customer their plan failed while
-        // the money is still moving.
+        // the money is still moving. Nothing is settled either — the plan has not moved yet, so
+        // dropping the entitlement cache here would announce a change that has not happened.
         if result.requiresAction == true || result.processing == true { return }
         errorMessage = Self.refusalMessage(operation, message: result.errorMessage, code: result.errorCode)
+    }
+
+    /// Everything "a tier change landed" means beyond the message: the shared entitlement cache is
+    /// dropped and the state a plan move changes is re-read.
+    ///
+    /// ONE owner runs this per change. This model runs it for a change it was asked to make
+    /// directly — `changeTier` and the two methods left at their default `settles`, which is the
+    /// legacy path a host or the older panels take. `WildwoodPlanChangeModel` runs it instead for
+    /// a change it drove, exactly once and even when that change drains after the view has gone,
+    /// having posted the change with `settles: false`.
+    ///
+    /// Two owners for one change bump `FeatureStore`'s epoch twice and emit `entitlementsChanged`
+    /// twice — so every other subscriber in the host app reacts twice to one plan move — and read
+    /// the same three endpoints twice.
+    ///
+    /// Internal, not private: the plan-change driver is the other owner.
+    func applyTierChangeSettlement() async {
+        invalidateEntitlements(.tierChange)
+        await loadStatus()
+        await loadFeatures()
+        await loadLimits()
     }
 
     public func changeTier(to tier: AppTierModel, pricing: AppTierPricingModel?, immediate: Bool, paymentTransactionId: String? = nil) async {
@@ -446,10 +490,9 @@ public final class WildwoodSubscriptionAdminModel {
                     ? "Tier change scheduled for \(result.effectiveDate?.formatted(date: .abbreviated, time: .omitted) ?? "the next billing period")."
                     : "Tier changed to \(tier.name)."
                 tierChangePreview = nil
-                invalidateEntitlements(.tierChange)
-                await loadStatus()
-                await loadFeatures()
-                await loadLimits()
+                // The legacy direct path: this model ran the change, so this model settles it —
+                // once, exactly as it always has.
+                await applyTierChangeSettlement()
             } else if result.requiresAction != true && result.processing != true {
                 // `requiresAction`/`processing` arrive with `success == false` and mean "not yet",
                 // not "refused" — surfacing them as errors tells a customer their plan failed
@@ -690,9 +733,9 @@ public final class WildwoodSubscriptionAdminModel {
     /// useSubscriptionAdmin's `wrapMutation`, which invalidates and THEN emits
     /// `entitlementsChanged` with the reason). Invalidation is lazy: gates
     /// reload on demand via the store's epoch, no eager refetch.
-    /// Internal, not private: the registration/subscription drivers settle the cache themselves
-    /// when a change DRAINS after the view has gone, and a drain has no host callback left to do
-    /// it for them.
+    /// Internal, not private: ``applyTierChangeSettlement()`` is shared with the plan-change
+    /// driver, and the manage view's pack checkout — the one mutation no model here ran — drops
+    /// the cache through it directly.
     func invalidateEntitlements(_ reason: EntitlementsChangedReason) {
         client.features.invalidateEntitlements(appId: appId, reason: reason)
     }
