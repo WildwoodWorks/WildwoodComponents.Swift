@@ -5,6 +5,14 @@
 import SwiftUI
 import WildwoodCore
 
+/// The signed-in user's plan, with an upgrade path.
+///
+/// - Warning: Superseded by ``RegistrationSubscriptionManageView``, which runs a plan change
+///   through preview, confirmation, its own payment sheet, 3-D Secure and completion. This
+///   component stays public and behaves exactly as before: it previews the change, raises
+///   `onTierChangeRequested` for the host to collect payment its own way, and applies the change
+///   with whatever transaction id comes back.
+@available(*, deprecated, message: "Use RegistrationAndSubscriptionComponent(.manage(...)) or RegistrationSubscriptionManageView, which runs a plan change through preview, confirmation, a payment step and completion. Still supported and unchanged.")
 public struct AppTierComponent: View {
     @Environment(\.wildwoodClient) private var client
 

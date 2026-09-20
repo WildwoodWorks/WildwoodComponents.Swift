@@ -12,6 +12,16 @@
 import SwiftUI
 import WildwoodCore
 
+/// The original signup wizard.
+///
+/// - Warning: Superseded by ``RegistrationSubscriptionSignupView``. The view keeps this wizard's
+///   step copy and locators but reads the app's registration settings itself (no `requireToken` /
+///   `allowOpenRegistration` / `showOptionalTokenEntry` to resolve), validates a registration
+///   token's plan before anything is charged, buys packs after the login on the card already
+///   taken, reports a structured `SignupOutcome`, and handles invite redemption
+///   (`tokenMode: .required`). This component stays public and behaves exactly as before; nothing
+///   has been removed.
+@available(*, deprecated, message: "Use RegistrationAndSubscriptionComponent(.signup(...)) or RegistrationSubscriptionSignupView, which reads the app's registration settings itself, validates a token's plan before anything is charged, buys packs on the card already taken and reports a SignupOutcome. Still supported and unchanged.")
 public struct SignupWithSubscriptionComponent: View {
     @Environment(\.wildwoodClient) private var client
 

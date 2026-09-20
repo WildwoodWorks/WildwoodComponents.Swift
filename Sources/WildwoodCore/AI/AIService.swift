@@ -206,6 +206,137 @@ public final class AIService: Sendable {
         )
     }
 
+    // MARK: - Speech-to-text
+
+    /// Transcribe a recorded clip server-side.
+    ///
+    /// The UI-free half of voice input: this package records nothing and asks for no microphone
+    /// permission — the HOST captures the audio (`AVAudioRecorder`, typically `audio/m4a`) and
+    /// hands the bytes over, so the usage strings stay in the host's Info.plist where the App
+    /// Store expects them. iOS also offers on-device dictation in every text field for free, which
+    /// is why `AIChatComponent` ships no microphone button; see the README's "Speech-to-text".
+    ///
+    /// Ported from `@wildwood/core`'s `AIService.transcribeAudio` and Blazor's
+    /// `AIService.TranscribeAudioAsync`: multipart with the file part named `file` and a
+    /// `speech.<ext>` filename, the part carrying the BARE media type (`audio/webm;codecs=opus`
+    /// becomes `audio/webm` — a parameter is enough to make a strict media-type parser refuse the
+    /// header, and the server ignores codecs anyway), and `configurationId`/`language` omitted
+    /// when empty.
+    ///
+    /// IDIOM NOTE — a business failure is DATA, never a throw: no audio, a non-2xx, a refused
+    /// format and a dead network all come back as a result whose `success` is false and whose
+    /// `errorMessage` can be shown to the customer as it stands. The `throws` is there for ONE
+    /// thing: task cancellation, which must not be flattened into "transcription failed" when the
+    /// customer simply left the screen. Same shape as ``AppTierService/completeTierChange(appId:pendingChangeId:)``.
+    ///
+    /// - Parameters:
+    ///   - audioData: The recorded bytes. Empty fails without a request.
+    ///   - contentType: The recording's media type, with or without codec parameters.
+    ///   - configurationId: The AI configuration to transcribe with; omitted from the form when
+    ///     nil or empty.
+    ///   - language: A BCP-47 hint (`en-US`); omitted from the form when nil or empty.
+    /// - Throws: `CancellationError` only.
+    public func transcribeAudio(
+        audioData: Data,
+        contentType: String,
+        configurationId: String? = nil,
+        language: String? = nil
+    ) async throws -> SpeechTranscriptionResult {
+        guard !audioData.isEmpty else {
+            return SpeechTranscriptionResult(success: false, text: "", errorMessage: Self.noAudioMessage)
+        }
+
+        let bareType = Self.bareMediaType(contentType)
+        var fields: [String: String] = [:]
+        if let configurationId, !configurationId.isEmpty {
+            fields["configurationId"] = configurationId
+        }
+        if let language, !language.isEmpty {
+            fields["language"] = language
+        }
+
+        do {
+            let result: SpeechTranscriptionResult? = try await http.postMultipart(
+                "api/stt/transcribe",
+                fileField: "file",
+                fileName: Self.speechFileName(forBareMediaType: bareType),
+                fileData: audioData,
+                mimeType: bareType.isEmpty ? "application/octet-stream" : bareType,
+                fields: fields
+            )
+            // An empty or unusable 2xx body is not a transcription. JS names the status here; the
+            // Swift client does not surface a SUCCESS status to its callers, so the generic copy
+            // stands in.
+            guard let result else {
+                return SpeechTranscriptionResult(success: false, text: "", errorMessage: Self.genericFailureMessage)
+            }
+            if result.success {
+                return SpeechTranscriptionResult(success: true, text: result.text)
+            }
+            if let serverMessage = result.errorMessage, !serverMessage.isEmpty {
+                return SpeechTranscriptionResult(success: false, text: "", errorMessage: serverMessage)
+            }
+            return SpeechTranscriptionResult(success: false, text: "", errorMessage: Self.genericFailureMessage)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return SpeechTranscriptionResult(success: false, text: "", errorMessage: Self.transcriptionErrorMessage(error))
+        }
+    }
+
+    /// Shown when a stop produced no audio at all (`SpeechAudioFormats.NoAudioMessage`).
+    static let noAudioMessage = "No audio was recorded."
+    /// The generic failure, used when nothing more specific is known.
+    static let genericFailureMessage = "Transcription failed. Please try again."
+
+    /// Upload extension per recorded format, keyed by BARE media type. Mirrors the .NET
+    /// `SpeechAudioFormats` table and the JS map, which mirror WildwoodAPI's `STTAudioFormats`.
+    private static let audioExtensionByMediaType: [String: String] = [
+        "audio/webm": ".webm",
+        "audio/ogg": ".ogg",
+        "audio/mp4": ".mp4",
+        "audio/x-m4a": ".m4a",
+        "audio/m4a": ".m4a",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/wave": ".wav",
+    ]
+
+    /// `"audio/webm;codecs=opus"` becomes `"audio/webm"`. Empty string for a blank input.
+    static func bareMediaType(_ contentType: String) -> String {
+        let head: Substring
+        if let separator = contentType.firstIndex(of: ";") {
+            head = contentType[contentType.startIndex..<separator]
+        } else {
+            head = contentType[contentType.startIndex..<contentType.endIndex]
+        }
+        return head.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// `speech.webm`, `speech.m4a`, ... — or a bare `speech` for a format this library does not
+    /// name, which the server reads as "let the provider sniff it".
+    static func speechFileName(forBareMediaType bareMediaType: String) -> String {
+        "speech\(audioExtensionByMediaType[bareMediaType] ?? "")"
+    }
+
+    /// The server answered, so prefer its own `errorMessage` and fall back to the status code —
+    /// the two messages the .NET client reports. Anything else (network, timeout, a body that did
+    /// not decode) carries no server message and gets the generic retry copy.
+    private static func transcriptionErrorMessage(_ error: any Error) -> String {
+        guard let wildwoodError = error as? WildwoodError, wildwoodError.status > 0 else {
+            return genericFailureMessage
+        }
+        if let details = wildwoodError.details,
+           let body = try? JSONSerialization.jsonObject(with: details) as? [String: Any],
+           let fromBody = body["errorMessage"] as? String,
+           !fromBody.isEmpty {
+            return fromBody
+        }
+        return "Transcription failed (\(wildwoodError.status))."
+    }
+
     /// Infer MIME type from a file extension when the platform type is unavailable.
     public static func mediaType(forFileName fileName: String) -> String {
         let ext = (fileName as NSString).pathExtension.lowercased()

@@ -18,15 +18,28 @@ WildwoodCore        ← services, models, session/token mgmt, storage (zero UI i
 ```
 
 - **WildwoodCore** mirrors `@wildwood/core`: `WildwoodClient` factory exposing `auth`, `session`,
-  `ai`, `aiFlow`, `messaging`, `payment`, `appTier`, `features` (shared entitlement cache backing
-  FeatureGate), `catalog` (shared public-catalog cache: 60 s TTL per app + currency override,
-  one in-flight load, failures never cached), `twoFactor`, `captcha`, `disclaimer`, `feedback`,
-  `notifications`, `theme`, `events`, `http`. Strict Swift 6 concurrency: `WildwoodHttpClient` and
-  `TokenRefreshCoordinator` are actors; `SessionManager`/`NotificationService`/`ThemeService`/
-  `WildwoodEventEmitter`/`WildwoodClient` are `@MainActor @Observable`; request/response services
-  are stateless `Sendable` classes.
+  `ai` (chat, TTS, and `transcribeAudio` — server STT; no voice UI, see below), `aiFlow`,
+  `aiFlowSubscriptions`, `documents`, `messaging`, `payment`, `appTier`, `features` (shared
+  entitlement cache backing FeatureGate), `catalog` (shared public-catalog cache: 60 s TTL per app
+  + currency override, one in-flight load, failures never cached), `twoFactor`, `captcha`,
+  `disclaimer`, `feedback`, `consent`, `attribution`, `notifications`, `notificationInbox`,
+  `theme`, `events`, `http`, plus the app-wide `paymentActionHandler` seam. Strict Swift 6
+  concurrency: `WildwoodHttpClient` and `TokenRefreshCoordinator` are actors;
+  `SessionManager`/`NotificationService`/`ThemeService`/`AttributionService`/`FeatureStore`/
+  `PublicCatalogStore`/`WildwoodEventEmitter`/`WildwoodClient` are `@MainActor @Observable`;
+  request/response services are stateless `Sendable` classes.
+- **Components**: 46 `.swift` files under `Sources/WildwoodSwiftUI/Components/` (the Sync count
+  rule — support types such as `TierCard`, `UsageMath` and `StorePurchaseSettlement` included).
+  `RegistrationAndSubscriptionComponent` (September 2026) is the shell over
+  `RegistrationSubscriptionPricingView` / `…SignupView` / `…ManageView`; it supersedes
+  `SignupWithSubscriptionComponent`, `AppTierComponent` and `PricingDisplayComponent`, all three
+  now `@available(*, deprecated)` but unchanged and still supported.
 - **Test suite**: `WildwoodComponentsTestSuite.iOS/` — XcodeGen app (project.yml checked in,
-  .xcodeproj generated on a Mac), one test screen per component.
+  .xcodeproj generated on a Mac), one test screen per component: 21 `case`s of `TestScreen`
+  (the Sync count rule), including `registrationSubscription` and `attribution`. Custom plist keys
+  go through XcodeGen's `info:` block, never `INFOPLIST_KEY_*`; the app registers the
+  `wildwoodtest` URL scheme there so `.onOpenURL` / `SignupParams` / attribution capture can be
+  exercised (`xcrun simctl openurl booted "wildwoodtest://signup?tier=pro"`).
 
 ## Parity rules (CRITICAL)
 
@@ -63,6 +76,16 @@ WildwoodCore        ← services, models, session/token mgmt, storage (zero UI i
   successful validation that returned a Wildwood transactionId (restores: success alone) —
   see `StorePurchaseSettlement`. Other providers = generic `initiatePayment`/`confirmPayment`
   with external web checkout.
+
+- Speech-to-text is **method-level parity only**: `AIService.transcribeAudio` posts multipart to
+  `api/stt/transcribe` (file part `file`, `speech.<ext>` from the bare media type, optional
+  `configurationId`/`language`) and never throws except on cancellation. There is deliberately no
+  microphone UI in `AIChatComponent` — the usage strings belong in the HOST's Info.plist and iOS
+  gives every text field dictation for free. Do not "fix" this against the web stacks.
+- Payments/3-D Secure: no Stripe dependency. A host injects `WildwoodPaymentActionHandler`
+  (parameter, then `.wildwoodPaymentActionHandler(_:)`, then `WildwoodClient.paymentActionHandler`).
+  Without one the flows never send `SupportsPaymentAction`/`supportsSetupIntent`, never create a
+  checkout payment method, and report a `requires_action` answer as "finish on the web".
 
 ## Commands (macOS only — code is authored on Windows, built on a Mac/CI)
 

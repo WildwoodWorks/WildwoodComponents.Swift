@@ -246,3 +246,31 @@ public struct TTSSynthesisResult: Codable, Sendable, Equatable {
     public var audioBase64: String
     public var contentType: String
 }
+
+/// Result of a server-side speech-to-text transcription (`POST api/stt/transcribe`).
+///
+/// Mirrors `@wildwood/core`'s `SpeechTranscriptionResult` and .NET's
+/// `WildwoodComponents.Shared/Models/AIChatModels.cs` field for field, so the same server body
+/// decodes the same way in all three stacks. A clip with no speech in it is a SUCCESS with empty
+/// text, not a failure.
+public struct SpeechTranscriptionResult: Codable, Sendable, Equatable {
+    /// Whether the audio was transcribed. False on any server, provider or transport failure.
+    public var success: Bool
+    /// The transcribed text. Empty when the clip carried no speech, and empty on every failure.
+    public var text: String
+    /// A user-presentable reason when ``success`` is false; nil on success.
+    public var errorMessage: String?
+
+    public init(success: Bool = false, text: String = "", errorMessage: String? = nil) {
+        self.success = success
+        self.text = text
+        self.errorMessage = errorMessage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        success = try c.decodeIfPresent(Bool.self, forKey: .success) ?? false
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+    }
+}
