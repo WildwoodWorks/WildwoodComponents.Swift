@@ -41,6 +41,20 @@ public final class AppTierService: Sendable {
         await getTiers(appId: appId)
     }
 
+    /// The same public request ``getPublicTiers(appId:)`` makes, reporting a failure instead of
+    /// swallowing it into an empty array.
+    ///
+    /// THROWS deliberately, and is the add-on-side twin of ``getPublicAddOns(appId:)``: a pricing
+    /// screen has to be able to tell "this app sells no plans" from "the catalog failed to load",
+    /// and an empty array cannot express the second. The JS core's `getTiers`/`getPublicTiers`
+    /// already propagate; this stack's swallow and predate the public catalog, so the behaviour is
+    /// added ALONGSIDE them rather than changed underneath the components that rely on it.
+    /// ``PublicCatalogStore`` loads through this method.
+    public func getPublicTiersThrowing(appId: String) async throws -> [AppTierModel] {
+        let data: [AppTierModel]? = try await http.get("api/app-tiers/\(appId)/public", skipAuth: true)
+        return data ?? []
+    }
+
     public func getAvailableAddOns(appId: String) async -> [AppTierAddOnModel] {
         let data: [AppTierAddOnModel]? = try? await http.get("api/app-tier-addons/\(appId)/available")
         return data ?? []

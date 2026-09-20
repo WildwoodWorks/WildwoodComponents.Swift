@@ -19,7 +19,8 @@ WildwoodCore        ← services, models, session/token mgmt, storage (zero UI i
 
 - **WildwoodCore** mirrors `@wildwood/core`: `WildwoodClient` factory exposing `auth`, `session`,
   `ai`, `aiFlow`, `messaging`, `payment`, `appTier`, `features` (shared entitlement cache backing
-  FeatureGate), `twoFactor`, `captcha`, `disclaimer`, `feedback`,
+  FeatureGate), `catalog` (shared public-catalog cache: 60 s TTL per app + currency override,
+  one in-flight load, failures never cached), `twoFactor`, `captcha`, `disclaimer`, `feedback`,
   `notifications`, `theme`, `events`, `http`. Strict Swift 6 concurrency: `WildwoodHttpClient` and
   `TokenRefreshCoordinator` are actors; `SessionManager`/`NotificationService`/`ThemeService`/
   `WildwoodEventEmitter`/`WildwoodClient` are `@MainActor @Observable`; request/response services

@@ -32,6 +32,9 @@ public final class WildwoodClient {
     /// Shared feature-entitlement cache backing FeatureGate — one bulk fetch
     /// per app, invalidated on auth changes and entitlement mutations.
     public let features: FeatureStore
+    /// Shared public-catalog cache (what the app sells) — one pair of public
+    /// requests per app + currency override, 60-second TTL, failures never cached.
+    public let catalog: PublicCatalogStore
     @ObservationIgnored public let feedback: FeedbackService
     @ObservationIgnored public let consent: ConsentService
     /// Campaign Attribution: started by `initialize()`, fed by `.onOpenURL` (the
@@ -67,6 +70,7 @@ public final class WildwoodClient {
         let appTier = AppTierService(http: http)
         self.appTier = appTier
         self.features = FeatureStore(appTier: appTier, defaultAppId: config.appId, events: events)
+        self.catalog = PublicCatalogStore(appTier: appTier, defaultAppId: config.appId)
         self.feedback = FeedbackService(http: http, defaultAppId: config.appId ?? "")
         let consent = ConsentService(http: http, storage: storage, defaultAppId: config.appId ?? "")
         self.consent = consent
