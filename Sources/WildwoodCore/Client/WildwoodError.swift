@@ -45,8 +45,13 @@ public struct WildwoodError: Error, Sendable, Equatable {
         }
     }
 
-    /// Build from an API error response body, extracting `message`/`error`/`title`,
-    /// `errorCode`, and the `requiresTwoFactor` flag — same precedence as the JS SDK.
+    /// Build from an API error response body, extracting
+    /// `message`/`errorMessage`/`error`/`title`, `errorCode`, and the
+    /// `requiresTwoFactor` flag — same precedence as the JS SDK.
+    ///
+    /// The raw body stays on ``details``: the structured action results (add-on
+    /// checkout, tier-change completion) read the server's own `errorCode` back
+    /// out of it, because ``Code`` is a closed enum that drops unknown codes.
     public static func fromResponse(status: Int, body: Data?, fallbackMessage: String) -> WildwoodError {
         var message = fallbackMessage
         var code: Code?
@@ -55,6 +60,8 @@ public struct WildwoodError: Error, Sendable, Equatable {
            let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
             if let m = object["message"] as? String {
                 message = m
+            } else if let em = object["errorMessage"] as? String {
+                message = em
             } else if let e = object["error"] as? String {
                 message = e
             } else if let t = object["title"] as? String {
@@ -70,6 +77,13 @@ public struct WildwoodError: Error, Sendable, Equatable {
             if object["requiresTwoFactor"] as? Bool == true {
                 code = .twoFactorRequired
             }
+        }
+
+        // HTTP/2 responses carry no status text, so a body without a recognized message field
+        // would otherwise produce an empty message — which callers that branch on "is there an
+        // error message?" read as no error.
+        if message.isEmpty {
+            message = "Request failed (HTTP \(status))"
         }
 
         return WildwoodError(message: message, status: status, code: code, details: body)

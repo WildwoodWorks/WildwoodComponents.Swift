@@ -21,6 +21,10 @@ public struct AppTierModel: Codable, Sendable, Equatable, Identifiable {
     public var contactButtonUrl: String?
     public var showPrice: Bool
     public var customBadgeText: String?
+    /// ISO code the tier's prices are quoted in, from the app's payment configuration. The public
+    /// catalog endpoint fills it in so an anonymous pricing page never guesses a currency; older
+    /// servers omit it, which is why it is optional here.
+    public var currency: String?
     public var pricingOptions: [AppTierPricingModel]
     public var features: [AppTierFeatureModel]
     public var limits: [AppTierLimitModel]
@@ -44,6 +48,7 @@ public struct AppTierModel: Codable, Sendable, Equatable, Identifiable {
         contactButtonUrl = try c.decodeIfPresent(String.self, forKey: .contactButtonUrl)
         showPrice = try c.decodeIfPresent(Bool.self, forKey: .showPrice) ?? true
         customBadgeText = try c.decodeIfPresent(String.self, forKey: .customBadgeText)
+        currency = try c.decodeIfPresent(String.self, forKey: .currency)
         pricingOptions = try c.decodeIfPresent([AppTierPricingModel].self, forKey: .pricingOptions) ?? []
         features = try c.decodeIfPresent([AppTierFeatureModel].self, forKey: .features) ?? []
         limits = try c.decodeIfPresent([AppTierLimitModel].self, forKey: .limits) ?? []
@@ -60,6 +65,9 @@ public struct AppTierPricingModel: Codable, Sendable, Equatable, Identifiable {
     public var price: Double
     public var billingFrequency: String
     public var billingFrequencyLabel: String?
+    /// Free-trial length in days from the underlying PricingModel; the payment processor starts
+    /// the same trial.
+    public var trialDays: Int?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -72,6 +80,7 @@ public struct AppTierPricingModel: Codable, Sendable, Equatable, Identifiable {
         price = try c.decodeIfPresent(Double.self, forKey: .price) ?? 0
         billingFrequency = try c.decodeIfPresent(String.self, forKey: .billingFrequency) ?? ""
         billingFrequencyLabel = try c.decodeIfPresent(String.self, forKey: .billingFrequencyLabel)
+        trialDays = try c.decodeIfPresent(Int.self, forKey: .trialDays)
     }
 }
 
@@ -128,6 +137,8 @@ public struct AppTierAddOnModel: Codable, Sendable, Equatable, Identifiable {
     public var iconClass: String
     public var badgeColor: String
     public var trialDays: Int?
+    /// ISO code the pack's prices are quoted in — the same app-level currency the tiers carry.
+    public var currency: String?
     public var features: [AppTierAddOnFeatureModel]
     public var pricingOptions: [AppTierAddOnPricingModel]
     public var bundledInTierIds: [String]
@@ -144,6 +155,7 @@ public struct AppTierAddOnModel: Codable, Sendable, Equatable, Identifiable {
         iconClass = try c.decodeIfPresent(String.self, forKey: .iconClass) ?? ""
         badgeColor = try c.decodeIfPresent(String.self, forKey: .badgeColor) ?? ""
         trialDays = try c.decodeIfPresent(Int.self, forKey: .trialDays)
+        currency = try c.decodeIfPresent(String.self, forKey: .currency)
         features = try c.decodeIfPresent([AppTierAddOnFeatureModel].self, forKey: .features) ?? []
         pricingOptions = try c.decodeIfPresent([AppTierAddOnPricingModel].self, forKey: .pricingOptions) ?? []
         bundledInTierIds = try c.decodeIfPresent([String].self, forKey: .bundledInTierIds) ?? []
@@ -171,6 +183,8 @@ public struct AppTierAddOnPricingModel: Codable, Sendable, Equatable, Identifiab
     public var pricingModelName: String
     public var price: Double
     public var billingFrequency: String
+    /// Trial length (days) from the underlying PricingModel; drives the processor's native trial.
+    public var trialDays: Int?
     public var isDefault: Bool
 
     public init(from decoder: Decoder) throws {
@@ -180,6 +194,7 @@ public struct AppTierAddOnPricingModel: Codable, Sendable, Equatable, Identifiab
         pricingModelName = try c.decodeIfPresent(String.self, forKey: .pricingModelName) ?? ""
         price = try c.decodeIfPresent(Double.self, forKey: .price) ?? 0
         billingFrequency = try c.decodeIfPresent(String.self, forKey: .billingFrequency) ?? ""
+        trialDays = try c.decodeIfPresent(Int.self, forKey: .trialDays)
         isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
     }
 }
@@ -235,9 +250,18 @@ public struct UserTierSubscriptionModel: Codable, Sendable, Equatable, Identifia
 
 public struct UserAddOnSubscriptionModel: Codable, Sendable, Equatable, Identifiable {
     public var id: String
+    public var userId: String
+    public var appId: String
     public var companyId: String?
     public var appTierAddOnId: String
+    public var appTierAddOnPricingId: String?
     public var status: String
+    /// The payment that bought this pack. A row WITHOUT one was granted rather than sold — a
+    /// registration token's included pack, or an admin grant — so nothing bills it and there is
+    /// nothing to cancel at a provider.
+    public var paymentTransactionId: String?
+    /// The payment provider the pack is billed through, when one bills it.
+    public var userPaymentProviderId: String?
     public var addOnName: String
     public var addOnDescription: String
     public var isBundled: Bool
@@ -251,9 +275,14 @@ public struct UserAddOnSubscriptionModel: Codable, Sendable, Equatable, Identifi
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        userId = try c.decodeIfPresent(String.self, forKey: .userId) ?? ""
+        appId = try c.decodeIfPresent(String.self, forKey: .appId) ?? ""
         companyId = try c.decodeIfPresent(String.self, forKey: .companyId)
         appTierAddOnId = try c.decodeIfPresent(String.self, forKey: .appTierAddOnId) ?? ""
+        appTierAddOnPricingId = try c.decodeIfPresent(String.self, forKey: .appTierAddOnPricingId)
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
+        paymentTransactionId = try c.decodeIfPresent(String.self, forKey: .paymentTransactionId)
+        userPaymentProviderId = try c.decodeIfPresent(String.self, forKey: .userPaymentProviderId)
         addOnName = try c.decodeIfPresent(String.self, forKey: .addOnName) ?? ""
         addOnDescription = try c.decodeIfPresent(String.self, forKey: .addOnDescription) ?? ""
         isBundled = try c.decodeIfPresent(Bool.self, forKey: .isBundled) ?? false
@@ -373,12 +402,68 @@ public struct AppFeatureDefinitionModel: Codable, Sendable, Equatable, Identifia
     }
 }
 
+/// Result of a tier change.
+///
+/// `requiresAction` and `processing` are "not yet", not "no": the processor accepted the change
+/// and is waiting on the customer (3-D Secure) or on itself, and both arrive with
+/// `success == false`. A caller must not treat either as a refusal — confirm `clientSecret` and
+/// then post the change's `pendingChangeId` to the tier-change completion endpoint.
 public struct AppTierChangeResultModel: Codable, Sendable, Equatable {
     public var success: Bool
     public var errorMessage: String
     public var subscription: UserTierSubscriptionModel?
     public var isScheduled: Bool
     public var effectiveDate: Date?
+    /// The customer must authenticate the prorated charge before the plan moves.
+    public var requiresAction: Bool?
+    /// The secret the app confirms. Secret — never log it, never store it.
+    public var clientSecret: String?
+    /// Id of the parked change, for the completion endpoint.
+    public var pendingChangeId: String?
+    public var paymentIntentId: String?
+    /// When the processor drops a parked change that is never authenticated.
+    public var expiresAt: Date?
+    /// Amount being authenticated, in major units.
+    public var amountDue: Double?
+    /// Currency of ``amountDue``.
+    public var currency: String?
+    /// The payment is in but the processor has not finished applying the change — complete again
+    /// shortly.
+    public var processing: Bool?
+    /// Machine-readable refusal reason; see ``TierChangeErrorCodes``.
+    public var errorCode: String?
+
+    public init(
+        success: Bool = false,
+        errorMessage: String = "",
+        subscription: UserTierSubscriptionModel? = nil,
+        isScheduled: Bool = false,
+        effectiveDate: Date? = nil,
+        requiresAction: Bool? = nil,
+        clientSecret: String? = nil,
+        pendingChangeId: String? = nil,
+        paymentIntentId: String? = nil,
+        expiresAt: Date? = nil,
+        amountDue: Double? = nil,
+        currency: String? = nil,
+        processing: Bool? = nil,
+        errorCode: String? = nil
+    ) {
+        self.success = success
+        self.errorMessage = errorMessage
+        self.subscription = subscription
+        self.isScheduled = isScheduled
+        self.effectiveDate = effectiveDate
+        self.requiresAction = requiresAction
+        self.clientSecret = clientSecret
+        self.pendingChangeId = pendingChangeId
+        self.paymentIntentId = paymentIntentId
+        self.expiresAt = expiresAt
+        self.amountDue = amountDue
+        self.currency = currency
+        self.processing = processing
+        self.errorCode = errorCode
+    }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -387,6 +472,15 @@ public struct AppTierChangeResultModel: Codable, Sendable, Equatable {
         subscription = try c.decodeIfPresent(UserTierSubscriptionModel.self, forKey: .subscription)
         isScheduled = try c.decodeIfPresent(Bool.self, forKey: .isScheduled) ?? false
         effectiveDate = try c.decodeIfPresent(Date.self, forKey: .effectiveDate)
+        requiresAction = try c.decodeIfPresent(Bool.self, forKey: .requiresAction)
+        clientSecret = try c.decodeIfPresent(String.self, forKey: .clientSecret)
+        pendingChangeId = try c.decodeIfPresent(String.self, forKey: .pendingChangeId)
+        paymentIntentId = try c.decodeIfPresent(String.self, forKey: .paymentIntentId)
+        expiresAt = try c.decodeIfPresent(Date.self, forKey: .expiresAt)
+        amountDue = try c.decodeIfPresent(Double.self, forKey: .amountDue)
+        currency = try c.decodeIfPresent(String.self, forKey: .currency)
+        processing = try c.decodeIfPresent(Bool.self, forKey: .processing)
+        errorCode = try c.decodeIfPresent(String.self, forKey: .errorCode)
     }
 }
 

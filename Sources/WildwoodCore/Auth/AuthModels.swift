@@ -470,6 +470,87 @@ public struct OpenRegistrationResult: Codable, Sendable, Equatable {
     }
 }
 
+/// One app's plan carried by a registration token: the tier, its pricing, the packs and the
+/// features the token grants, with the server's display names where it sent them.
+public struct RegistrationTokenAppGrant: Codable, Sendable, Equatable, Identifiable {
+    public var appId: String
+    public var appName: String?
+    public var appTierId: String
+    public var appTierName: String?
+    public var appTierPricingId: String?
+    public var pricingName: String?
+    public var addOnIds: [String]
+    public var addOnNames: [String]?
+    public var featureCodes: [String]
+    public var featureNames: [String]?
+
+    public var id: String { appId }
+
+    public init(
+        appId: String = "",
+        appName: String? = nil,
+        appTierId: String = "",
+        appTierName: String? = nil,
+        appTierPricingId: String? = nil,
+        pricingName: String? = nil,
+        addOnIds: [String] = [],
+        addOnNames: [String]? = nil,
+        featureCodes: [String] = [],
+        featureNames: [String]? = nil
+    ) {
+        self.appId = appId
+        self.appName = appName
+        self.appTierId = appTierId
+        self.appTierName = appTierName
+        self.appTierPricingId = appTierPricingId
+        self.pricingName = pricingName
+        self.addOnIds = addOnIds
+        self.addOnNames = addOnNames
+        self.featureCodes = featureCodes
+        self.featureNames = featureNames
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        appId = try c.decodeIfPresent(String.self, forKey: .appId) ?? ""
+        appName = try c.decodeIfPresent(String.self, forKey: .appName)
+        appTierId = try c.decodeIfPresent(String.self, forKey: .appTierId) ?? ""
+        appTierName = try c.decodeIfPresent(String.self, forKey: .appTierName)
+        appTierPricingId = try c.decodeIfPresent(String.self, forKey: .appTierPricingId)
+        pricingName = try c.decodeIfPresent(String.self, forKey: .pricingName)
+        addOnIds = try c.decodeIfPresent([String].self, forKey: .addOnIds) ?? []
+        addOnNames = try c.decodeIfPresent([String].self, forKey: .addOnNames)
+        featureCodes = try c.decodeIfPresent([String].self, forKey: .featureCodes) ?? []
+        featureNames = try c.decodeIfPresent([String].self, forKey: .featureNames)
+    }
+}
+
+/// What a registration token grants, from the server's detailed token validation
+/// (`GET api/registrationtokens/validate-detailed/{token}`).
+public struct RegistrationTokenDetails: Codable, Sendable, Equatable {
+    public var isValid: Bool
+    public var errorMessage: String?
+    /// Per-app plans the token carries. Empty when the token only grants app access.
+    public var appGrants: [RegistrationTokenAppGrant]
+
+    public init(
+        isValid: Bool = false,
+        errorMessage: String? = nil,
+        appGrants: [RegistrationTokenAppGrant] = []
+    ) {
+        self.isValid = isValid
+        self.errorMessage = errorMessage
+        self.appGrants = appGrants
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isValid = try c.decodeIfPresent(Bool.self, forKey: .isValid) ?? false
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+        appGrants = try c.decodeIfPresent([RegistrationTokenAppGrant].self, forKey: .appGrants) ?? []
+    }
+}
+
 public struct PendingDisclaimerModel: Codable, Sendable, Equatable, Identifiable {
     public var disclaimerId: String
     public var versionId: String
