@@ -11,6 +11,16 @@ public struct TierCard: View {
     let isCurrentTier: Bool
     /// Fallback ISO code for a tier that carries none of its own (the catalog's, or the app's).
     let currency: String?
+    /// Percentage this plan's annual option saves against twelve monthly ones, when the grid is
+    /// quoting the year. Nil (or 0) renders no badge.
+    let discount: Int?
+    /// The plan a pricing link or the host marked as already chosen — the web's `isPreSelected`.
+    let isPreSelected: Bool
+    let showFeatures: Bool
+    let showLimits: Bool
+    /// Where a "contact us" plan (no pricing options, not free) sends the visitor when the tier
+    /// itself names no contact URL. The web's `enterpriseContactUrl`.
+    let enterpriseContactUrl: String?
     let onSelectPricing: ((AppTierPricingModel) -> Void)?
     let onSubscribe: ((AppTierModel, AppTierPricingModel?) -> Void)?
 
@@ -19,6 +29,11 @@ public struct TierCard: View {
         selectedPricing: AppTierPricingModel? = nil,
         isCurrentTier: Bool = false,
         currency: String? = nil,
+        discount: Int? = nil,
+        isPreSelected: Bool = false,
+        showFeatures: Bool = true,
+        showLimits: Bool = true,
+        enterpriseContactUrl: String? = nil,
         onSelectPricing: ((AppTierPricingModel) -> Void)? = nil,
         onSubscribe: ((AppTierModel, AppTierPricingModel?) -> Void)? = nil
     ) {
@@ -26,6 +41,11 @@ public struct TierCard: View {
         self.selectedPricing = selectedPricing
         self.isCurrentTier = isCurrentTier
         self.currency = currency
+        self.discount = discount
+        self.isPreSelected = isPreSelected
+        self.showFeatures = showFeatures
+        self.showLimits = showLimits
+        self.enterpriseContactUrl = enterpriseContactUrl
         self.onSelectPricing = onSelectPricing
         self.onSubscribe = onSubscribe
     }
@@ -36,7 +56,8 @@ public struct TierCard: View {
                 tier: tier,
                 selectedPricing: resolvedPricing,
                 isCurrentTier: isCurrentTier,
-                currency: currency
+                currency: currency,
+                discount: discount
             )
 
             if tier.pricingOptions.count > 1, let onSelectPricing {
@@ -55,16 +76,25 @@ public struct TierCard: View {
                 .pickerStyle(.segmented)
             }
 
-            TierCardFeatures(features: tier.features)
-            TierCardLimits(limits: tier.limits)
-            TierCardFooter(tier: tier, isCurrentTier: isCurrentTier) {
+            if showFeatures {
+                TierCardFeatures(features: tier.features)
+            }
+            if showLimits {
+                TierCardLimits(limits: tier.limits)
+            }
+            TierCardFooter(
+                tier: tier,
+                isCurrentTier: isCurrentTier,
+                isPreSelected: isPreSelected,
+                enterpriseContactUrl: enterpriseContactUrl
+            ) {
                 onSubscribe?(tier, resolvedPricing)
             }
         }
         .padding()
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
         .overlay {
-            if isCurrentTier {
+            if isCurrentTier || isPreSelected {
                 RoundedRectangle(cornerRadius: 16)
                     .strokeBorder(.tint, lineWidth: 2)
             }
@@ -84,17 +114,21 @@ public struct TierCardHeader: View {
     let isCurrentTier: Bool
     /// Fallback ISO code; the tier's own currency wins when it names one.
     let currency: String?
+    /// Percentage saved by paying for the year, when the grid is quoting the year.
+    let discount: Int?
 
     public init(
         tier: AppTierModel,
         selectedPricing: AppTierPricingModel?,
         isCurrentTier: Bool = false,
-        currency: String? = nil
+        currency: String? = nil,
+        discount: Int? = nil
     ) {
         self.tier = tier
         self.selectedPricing = selectedPricing
         self.isCurrentTier = isCurrentTier
         self.currency = currency
+        self.discount = discount
     }
 
     public var body: some View {
@@ -125,7 +159,11 @@ public struct TierCardHeader: View {
             }
 
             if tier.showPrice {
-                if tier.isFreeTier {
+                if isEnterprise {
+                    // The web card's word for a plan nobody has published a price for. Without
+                    // it the price line is simply blank next to a "Contact Sales" button.
+                    Text("Custom").font(.title2.weight(.bold))
+                } else if tier.isFreeTier {
                     Text("Free").font(.title2.weight(.bold))
                 } else if let pricing = selectedPricing {
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
@@ -144,7 +182,23 @@ public struct TierCardHeader: View {
                     }
                 }
             }
+
+            if let discount, discount > 0 {
+                // The web card's own wording ("Save {discount}%"), not a label: one plan card
+                // serves the pricing view, the admin panels and the standalone grid, and its
+                // copy has never been host-overridable in any stack.
+                let savingsText: String = "Save \(discount)%"
+                Text(savingsText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+            }
         }
+    }
+
+    /// The platform's "contact us" plan: not free, and priced by nobody. One definition, shared
+    /// with the footer, so the price line and the call to action cannot disagree about a plan.
+    private var isEnterprise: Bool {
+        TierCardRules.isEnterprise(tier)
     }
 
     /// The tier's own currency, then the catalog's, then nil — which formats as USD.
@@ -245,36 +299,89 @@ public struct TierCardLimits: View {
 public struct TierCardFooter: View {
     let tier: AppTierModel
     let isCurrentTier: Bool
+    /// Already chosen elsewhere (a pricing link, a host's `highlightTierId`): the call to action
+    /// continues with this plan rather than inviting a fresh choice.
+    let isPreSelected: Bool
+    /// Where a "contact us" plan goes when the tier names no contact URL of its own.
+    let enterpriseContactUrl: String?
     let onSubscribe: () -> Void
     @Environment(\.openURL) private var openURL
 
-    public init(tier: AppTierModel, isCurrentTier: Bool, onSubscribe: @escaping () -> Void) {
+    public init(
+        tier: AppTierModel,
+        isCurrentTier: Bool,
+        isPreSelected: Bool = false,
+        enterpriseContactUrl: String? = nil,
+        onSubscribe: @escaping () -> Void
+    ) {
         self.tier = tier
         self.isCurrentTier = isCurrentTier
+        self.isPreSelected = isPreSelected
+        self.enterpriseContactUrl = enterpriseContactUrl
         self.onSubscribe = onSubscribe
     }
 
     public var body: some View {
+        // Exactly ONE call to action renders, chosen by ``TierCardRules/footerAction(tier:isCurrentTier:isPreSelected:enterpriseContactUrl:)``
+        // — the web card's priority chain (current plan, the tier's own contact button, the host's
+        // enterprise URL, an enterprise button that raises the selection, then the ordinary
+        // Select). A plan with nothing to buy can therefore never also offer to sell it.
         VStack(spacing: 8) {
-            if tier.showSubscribeButton {
-                Button {
-                    onSubscribe()
-                } label: {
-                    Text(isCurrentTier ? "Current Plan" : "Select \(tier.name)")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isCurrentTier)
-            }
-            if tier.showContactButton, let urlString = tier.contactButtonUrl, let url = URL(string: urlString) {
-                Button {
-                    openURL(url)
-                } label: {
-                    Text("Contact Us").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+            switch action {
+            case .current(let title):
+                actionButton(title, prominent: true, disabled: true) {}
+            case .contactUs(let url):
+                linkButton(TierCardRules.contactUsTitle, url: url)
+            case .contactSales(let url):
+                linkButton(TierCardRules.contactSalesTitle, url: url)
+            case .contactSalesRequest(let title):
+                actionButton(title, prominent: false, disabled: false, perform: onSubscribe)
+            case .subscribe(let title):
+                actionButton(title, prominent: true, disabled: false, perform: onSubscribe)
+            case TierFooterAction.none:
+                EmptyView()
             }
         }
+    }
+
+    /// The one decision this footer makes, made outside the `body`.
+    private var action: TierFooterAction {
+        TierCardRules.footerAction(
+            tier: tier,
+            isCurrentTier: isCurrentTier,
+            isPreSelected: isPreSelected,
+            enterpriseContactUrl: enterpriseContactUrl
+        )
+    }
+
+    @ViewBuilder private func actionButton(
+        _ title: String,
+        prominent: Bool,
+        disabled: Bool,
+        perform: @escaping () -> Void
+    ) -> some View {
+        if prominent {
+            Button(action: perform) {
+                Text(title).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(disabled)
+        } else {
+            Button(action: perform) {
+                Text(title).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(disabled)
+        }
+    }
+
+    private func linkButton(_ title: String, url: URL) -> some View {
+        Button {
+            openURL(url)
+        } label: {
+            Text(title).frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
     }
 }
 
