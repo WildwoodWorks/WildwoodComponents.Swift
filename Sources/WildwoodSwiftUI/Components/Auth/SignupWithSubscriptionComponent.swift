@@ -67,14 +67,11 @@ public struct SignupWithSubscriptionComponent: View {
     @State private var disclaimersPending = false
     @State private var completedSubscribeResult: AppTierChangeResultModel?
 
-    // Account form
-    @State private var firstName = ""
-    @State private var lastName = ""
-    @State private var email = ""
-    @State private var username = ""
-    @State private var password = ""
-    @State private var confirmPassword = ""
-    @State private var registrationToken = ""
+    /// The account form as last submitted. Held here rather than as seven separate fields because
+    /// the fields themselves live in ``SignupRegistrationFormView``, which this screen and the
+    /// newer `RegistrationSubscriptionSignupView` share so their validation cannot drift. Kept
+    /// across a step back so the visitor does not retype anything.
+    @State private var submittedForm: RegistrationFormData?
 
     public init(
         appId: String? = nil,
@@ -147,49 +144,22 @@ public struct SignupWithSubscriptionComponent: View {
     }
 
     @ViewBuilder private var accountForm: some View {
-        VStack(spacing: 12) {
-            TextField("First name", text: $firstName)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.givenName)
-            TextField("Last name", text: $lastName)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.familyName)
-            TextField("Email", text: $email)
-                .textFieldStyle(.roundedBorder)
-                .textContentType(.emailAddress)
-                .keyboardType(.emailAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            TextField("Username (optional)", text: $username)
-                .textFieldStyle(.roundedBorder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            WildwoodSecureField("Password", text: $password, contentType: .newPassword)
-            WildwoodSecureField("Confirm password", text: $confirmPassword, contentType: .newPassword)
-
+        SignupRegistrationFormView(
+            initialFormData: submittedForm,
             // The optional token entry is suppressible (showOptionalTokenEntry);
             // when tokens are the only registration path the field always shows.
-            if authConfig?.allowTokenRegistration == true,
-               showOptionalTokenEntry || authConfig?.allowOpenRegistration != true {
-                TextField(
-                    authConfig?.allowOpenRegistration == true
-                        ? "Registration token (optional)"
-                        : "Registration token",
-                    text: $registrationToken
-                )
-                .textFieldStyle(.roundedBorder)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+            showTokenField: authConfig?.allowTokenRegistration == true
+                && (showOptionalTokenEntry || authConfig?.allowOpenRegistration != true),
+            // Settings that have NOT loaded are not "token only": a configuration fetch that
+            // failed must not leave the form permanently unsubmittable. The server has the last
+            // word on a missing token either way.
+            tokenRequired: authConfig.map { !$0.allowOpenRegistration } ?? false,
+            submitTitle: "Continue",
+            isBusy: isLoading,
+            onSubmit: { data in
+                Task { await continueFromAccount(data) }
             }
-
-            Button {
-                Task { await continueFromAccount() }
-            } label: {
-                Text("Continue").frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isLoading || email.isEmpty || password.isEmpty || firstName.isEmpty)
-        }
+        )
     }
 
     /// What the registration token sets up. Names only — a granted plan is not being sold here,
@@ -380,14 +350,14 @@ public struct SignupWithSubscriptionComponent: View {
 
     // MARK: - Account step
 
-    private func continueFromAccount() async {
+    private func continueFromAccount(_ data: RegistrationFormData) async {
         errorMessage = ""
         statusMessage = ""
-        guard password == confirmPassword else {
-            errorMessage = "Passwords do not match"
-            return
-        }
+        // The form itself refuses a mismatched confirmation, so anything arriving here is already
+        // internally consistent.
+        submittedForm = data
 
+        let registrationToken: String = data.registrationToken ?? ""
         guard let client, !registrationToken.isEmpty else {
             step = .tierSelection
             return
@@ -433,6 +403,9 @@ public struct SignupWithSubscriptionComponent: View {
     private func signUp(tier: AppTierModel?, pricing: AppTierPricingModel?) async {
         guard let client else { return }
         guard let resolvedAppId = appId ?? client.config.appId else { return }
+        // Nothing can be registered before the form has been filled in; the step order makes this
+        // unreachable, and stating it keeps the details in one place.
+        guard let form = submittedForm else { return }
         errorMessage = ""
         warningMessage = ""
         subscriptionFailed = false
@@ -453,15 +426,7 @@ public struct SignupWithSubscriptionComponent: View {
         }
         var request = SignupAccountRequest(
             appId: resolvedAppId,
-            form: RegistrationFormData(
-                firstName: firstName,
-                lastName: lastName,
-                username: username.isEmpty ? email : username,
-                email: email,
-                password: password,
-                registrationToken: registrationToken.isEmpty ? nil : registrationToken,
-                useToken: !registrationToken.isEmpty
-            ),
+            form: form,
             tierId: tier?.id,
             pricingId: pricing?.id,
             paymentTransactionId: collectedTransactionId,

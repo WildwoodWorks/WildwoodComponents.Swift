@@ -53,4 +53,37 @@ public enum RegistrationSubscriptionTestID {
     public static let billingToggle: String = "billing-toggle"
     /// The multi-select pack grid's Continue.
     public static let packsContinue: String = "packs-continue"
+
+    // MARK: Signup
+
+    /// The "registration is closed" panel. Its own hook because a host may render it alone.
+    public static let closedNotice: String = "regsub-closed"
+    /// What a registration token grants, shown above every step it applies to.
+    public static let tokenPlanSummary: String = "token-plan-summary"
+    /// The plan a signup link already chose, shown above the registration form. The web's
+    /// `.ww-plan-summary-card`.
+    public static let planSummaryCard: String = "plan-summary-card"
+    /// "Change plan" on that card.
+    public static let planChange: String = "plan-change"
+    /// Backing out of the plan's card step.
+    public static let paymentLeave: String = "payment-leave"
+    /// Resumes a failed signup where it stopped.
+    public static let signupRetry: String = "signup-retry"
+    /// Throws the attempt away and returns to the form.
+    public static let signupStartOver: String = "signup-start-over"
+    /// Leaves the finished signup.
+    public static let signupGetStarted: String = "signup-get-started"
+
+    // MARK: Pack checkout
+
+    /// The quoted basket.
+    public static let orderSummary: String = "order-summary"
+    /// The pack checkout panel.
+    public static let packCheckout: String = "pack-checkout"
+    /// Runs the failed checkout step again.
+    public static let packCheckoutRetry: String = "pack-checkout-retry"
+    /// Finishes the signup without the packs, reporting them as not bought.
+    public static let packCheckoutSkip: String = "pack-checkout-skip"
+    /// What became of each pack.
+    public static let packOutcomes: String = "pack-outcomes"
 }

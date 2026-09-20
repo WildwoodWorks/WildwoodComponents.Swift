@@ -187,6 +187,19 @@ public final class WildwoodSignupFlowModel {
     /// The pack checkout, while one is running. Owned here so the view can render its progress.
     public private(set) var packCheckout: WildwoodPackCheckoutModel?
 
+    /// Whether packs may be BOUGHT on this run.
+    ///
+    /// False on an App-Store-exclusive app (Decision 5 / Appendix C DD-4): pack checkout is a card
+    /// purchase and Apple's in-app-purchase product mapping is tier-only, so there is no way to buy
+    /// an add-on here. The pack STEP is then skipped and the basket is REPORTED as not bought, with
+    /// the reason — never quoted, never charged, and never quietly forgotten.
+    ///
+    /// The driver does not ask the question itself: the answer comes from the app's
+    /// platform-filtered payment providers, which the view already reads for its own reasons, and
+    /// an unanswerable lookup must not stop a card-billed app selling. Set it through
+    /// ``setPackPurchaseAvailable(_:)``.
+    @ObservationIgnored public private(set) var packPurchaseAvailable: Bool = true
+
     @ObservationIgnored private let attempt: SignupAccountAttempt
     @ObservationIgnored private var chosenPlan: ResolvedSignupPlan?
     @ObservationIgnored private var paymentTransactionId: String?
@@ -361,6 +374,17 @@ public final class WildwoodSignupFlowModel {
 
     public func choosePacks() {
         dispatch(.packsChosen(addOnIds: selectedPackIds))
+    }
+
+    /// Say whether packs may be bought on this device — see ``packPurchaseAvailable``.
+    ///
+    /// The answer usually arrives while the flow is still loading, but it is allowed to arrive
+    /// late, so the pump is nudged: a flow already sitting on the pack step must apply the new
+    /// answer where it actually is rather than waiting for the next thing the visitor does.
+    public func setPackPurchaseAvailable(_ available: Bool) {
+        if packPurchaseAvailable == available || detached { return }
+        packPurchaseAvailable = available
+        schedulePump()
     }
 
     public func skipPacks() {
@@ -625,8 +649,26 @@ public final class WildwoodSignupFlowModel {
             await runSignup(token)
             return true
 
+        case .packs:
+            // Nothing on this device can buy a pack, so the step has nothing to offer. Skipping it
+            // is exactly what the visitor would have pressed, and it empties the basket a signup
+            // link filled rather than carrying it to a checkout that cannot run.
+            if packPurchaseAvailable { return false }
+            selectedPackIds = []
+            return apply(.packsChosen(addOnIds: []))
+
         case .packCheckout:
             guard let token = claim("packCheckout", state.token) else { return false }
+            if !packPurchaseAvailable {
+                // Reported, not forgotten: the visitor asked for these packs, and a signup that
+                // drops them silently leaves them believing they have something they do not.
+                let unbought: [SignupPackOutcome] = SignupViewRules.unbuyablePackOutcomes(
+                    addOnIds: state.packsToBuy,
+                    names: state.names.addOns,
+                    message: labels.finishOnWeb
+                )
+                return apply(.packCheckoutFinished(token: token, packs: unbought))
+            }
             startPackCheckout(token)
             return false
 
@@ -638,7 +680,7 @@ public final class WildwoodSignupFlowModel {
             onEntitlementsChanged?(.signup)
             return false
 
-        case .loading, .closed, .register, .plan, .packs, .disclaimers, .failed:
+        case .loading, .closed, .register, .plan, .disclaimers, .failed:
             return false
         }
     }
