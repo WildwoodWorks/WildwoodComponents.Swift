@@ -57,6 +57,13 @@ private func planTier(
     return value
 }
 
+/// A catalog that sells one free plan and one paid one, for the plan-grid highlight rules.
+private func planCatalog() throws -> PublicCatalog {
+    let free: AppTierModel = try planTier(id: "tier-free", name: "Starter", isFreeTier: true)
+    let pro: AppTierModel = try planTier(id: "tier-pro", name: "Pro")
+    return PublicCatalog(appId: "app-1", currency: "USD", tiers: [free, pro])
+}
+
 private let labels: RegistrationSubscriptionSignupLabels = .defaults
 
 /// Every body the view can render, so the rules below are answered for all of them.
@@ -269,6 +276,107 @@ struct SignupViewTests {
         let mode = SignupRegistrationMode.resolve(closed, tokenMode: .required)
         #expect(!mode.closed)
         #expect(mode.requireToken)
+    }
+
+    // MARK: - The plan the grid opens on
+
+    @Test func planDefaultFreeOpensTheGridOnTheFreePlanWithoutChoosingItForThem() throws {
+        let catalog: PublicCatalog = try planCatalog()
+        let suggested: String? = SignupViewRules.defaultTierId(
+            planDefault: SignupPlanDefault.free,
+            isInvite: false,
+            catalog: catalog
+        )
+        #expect(suggested == "tier-free")
+        // A suggestion is not a choice: all it does is mark a card the visitor still taps.
+        #expect(
+            SignupViewRules.highlightTierId(
+                selectionTierId: nil,
+                defaultTierId: suggested,
+                preSelectedTierId: nil
+            ) == "tier-free"
+        )
+    }
+
+    @Test func nothingIsMarkedWhenTheHostNamesNoDefault() throws {
+        let catalog: PublicCatalog = try planCatalog()
+        #expect(
+            SignupViewRules.defaultTierId(
+                planDefault: SignupPlanDefault.none,
+                isInvite: false,
+                catalog: catalog
+            ) == nil
+        )
+        #expect(
+            SignupViewRules.highlightTierId(
+                selectionTierId: nil,
+                defaultTierId: nil,
+                preSelectedTierId: nil
+            ) == nil
+        )
+    }
+
+    @Test func nothingIsSuggestedWhileAnInviteIsBeingRedeemed() throws {
+        // The invite's plan comes from its token, so the grid never appears for a default to open
+        // on — and nothing is suggested even if it did.
+        let catalog: PublicCatalog = try planCatalog()
+        #expect(
+            SignupViewRules.defaultTierId(
+                planDefault: SignupPlanDefault.free,
+                isInvite: true,
+                catalog: catalog
+            ) == nil
+        )
+    }
+
+    @Test func theVisitorsOwnChoiceBeatsTheDefaultAndTheLink() {
+        #expect(
+            SignupViewRules.highlightTierId(
+                selectionTierId: "tier-team",
+                defaultTierId: "tier-free",
+                preSelectedTierId: "tier-pro"
+            ) == "tier-team"
+        )
+    }
+
+    @Test func aLinksPlanLosesToTheDefaultAndMarksTheGridWhenThereIsNoDefault() {
+        // The default sits AHEAD of the link on purpose: a stale or hand-edited `?tier=` is an id
+        // the flow already refused, so the grid opens on the host's default rather than on nothing.
+        #expect(
+            SignupViewRules.highlightTierId(
+                selectionTierId: nil,
+                defaultTierId: "tier-free",
+                preSelectedTierId: "tier-gone"
+            ) == "tier-free"
+        )
+        #expect(
+            SignupViewRules.highlightTierId(
+                selectionTierId: nil,
+                defaultTierId: nil,
+                preSelectedTierId: "tier-pro"
+            ) == "tier-pro"
+        )
+    }
+
+    @Test func nothingIsSuggestedWhenTheAppSellsNoFreePlan() throws {
+        // Nothing to suggest is not a failure: the grid is the one it would have been anyway.
+        let pro: AppTierModel = try planTier(id: "tier-pro", name: "Pro")
+        let paidOnly = PublicCatalog(appId: "app-1", currency: "USD", tiers: [pro])
+        #expect(
+            SignupViewRules.defaultTierId(
+                planDefault: SignupPlanDefault.free,
+                isInvite: false,
+                catalog: paidOnly
+            ) == nil
+        )
+        // And a catalog that has not loaded yet suggests nothing either.
+        #expect(
+            SignupViewRules.defaultTierId(
+                planDefault: SignupPlanDefault.free,
+                isInvite: false,
+                catalog: nil
+            ) == nil
+        )
     }
 
     // MARK: - What the payment step is handed
@@ -781,3 +889,35 @@ struct SignupViewStoreOnlyTests {
         #expect(requestCount(backend, path: registerPath) == 1)
     }
 }
+
+#if os(iOS)
+// MARK: - The shell's configuration carries what the view takes
+//
+// Guarded because the views and their configuration structs live inside `#if os(iOS)` while
+// `swift test` runs on the macOS host: this case is built when the tests are run against an iOS
+// destination. It is worth having anyway — a line forgotten in `init(configuration:)` drops the
+// host's setting SILENTLY: nothing fails, the signup simply ignores what it was told.
+
+@MainActor
+struct RegistrationSubscriptionSignupConfigurationTests {
+    /// Reflection rather than a property read: the view's parameters are `private let`, which is
+    /// exactly what the rest of the package cannot see either.
+    private func storedPlanDefault(_ view: RegistrationSubscriptionSignupView) -> SignupPlanDefault? {
+        for child in Mirror(reflecting: view).children where child.label == "planDefault" {
+            return child.value as? SignupPlanDefault
+        }
+        return nil
+    }
+
+    @Test func theConfigurationForwardsPlanDefaultToTheView() {
+        let chosen = RegistrationSubscriptionSignupConfiguration(planDefault: SignupPlanDefault.free)
+        #expect(chosen.planDefault == SignupPlanDefault.free)
+        #expect(storedPlanDefault(RegistrationSubscriptionSignupView(configuration: chosen)) == SignupPlanDefault.free)
+
+        // And a host that names nothing gets the view's own default, not a dropped value.
+        let plain = RegistrationSubscriptionSignupConfiguration()
+        #expect(plain.planDefault == SignupPlanDefault.none)
+        #expect(storedPlanDefault(RegistrationSubscriptionSignupView(configuration: plain)) == SignupPlanDefault.none)
+    }
+}
+#endif

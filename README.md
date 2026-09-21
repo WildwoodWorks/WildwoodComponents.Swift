@@ -100,7 +100,7 @@ parameter under the same name, and every one is defaulted except `onSelect` on p
 | View | Parameters |
 |---|---|
 | **Pricing** | `appId`, `currency`, `contactUrl`, `showPlans`, `showAddOns`, `offerFreeTierChoice`, `packSelection` (`.none` / `.multi`), `packPurchaseAvailable`, `addOnGroups`, `describeAddOn`, `showBillingToggle`, `defaultBilling`, `showFeatureComparison`, `showLimits`, `highlightTierId`, `labels`, `onError`, `onSelect` |
-| **Signup** | `appId`, `preSelectedTierId`, `preSelectedPricingId`, `preSelectedAddOnIds`, `registrationToken`, `prefillEmail`, `planSelection` (`.choose` / `.skip`), `packSelection` (`.choose` / `.none`), `tokenMode` (`.auto` / `.required`), `paymentOrder`, `requireBillingAddress`, `packPurchaseAvailable`, `paymentActionHandler`, `currency`, `contactUrl`, `closedMessage`, `labels`, `onAlreadySignedIn`, `onSignupComplete`, `onCancel`, `onEntitlementsChanged`, `onError` |
+| **Signup** | `appId`, `preSelectedTierId`, `preSelectedPricingId`, `preSelectedAddOnIds`, `registrationToken`, `prefillEmail`, `planSelection` (`.choose` / `.skip`), `planDefault` (`.none` / `.free`), `packSelection` (`.choose` / `.none`), `tokenMode` (`.auto` / `.required`), `paymentOrder`, `requireBillingAddress`, `packPurchaseAvailable`, `paymentActionHandler`, `currency`, `contactUrl`, `closedMessage`, `labels`, `onAlreadySignedIn`, `onSignupComplete`, `onCancel`, `onEntitlementsChanged`, `onError` |
 | **Manage** | `appId`, `layout` (`.tabs` / `.stacked`), `sections`, `showStatusAboveTabs`, `isAdmin`, `userId`, `companyId`, `allowPackSelfService`, `allowCancel`, `showAddOns`, `paymentActionHandler`, `currency`, `contactUrl`, `labels`, `onMergeUsage`, `onPaymentRequired`, `onSubscriptionChanged`, `onEntitlementsChanged`, `onError` |
 
 Every user-facing string is a member of `RegistrationSubscriptionLabels`, defaulted to the same
@@ -108,6 +108,15 @@ words the React and React Native packages say; override only the ones you are re
 `RegistrationSubscriptionPricingLabels` and `…SignupLabels` are typealiases of it, which is why the
 signup view takes a second `pricingLabels` for the grids inside it while the configuration's single
 `labels` feeds both.
+
+### The plan the grid opens on (`planDefault`)
+
+`planDefault: .free` opens the plan step MARKED on the app's free plan — a suggestion the visitor
+still taps, not a choice already made. Nothing else changes: the step still runs, the flow's state
+machine never sees the default, and it is ignored in invite mode (`tokenMode: .required`), where
+the plan comes from the token, and when the app sells no free plan. The grid marks
+`state.selection.tierId ?? planDefault's tier ?? preSelectedTierId` — the default sits AHEAD of a
+link's `?tier=` on purpose, because a stale or hand-edited one is an id the flow already refused.
 
 ### Account first, and `paymentOrder`
 
@@ -218,6 +227,12 @@ Accessibility identifiers carry the web's `data-ww-*` VALUES unchanged
 (`RegistrationSubscriptionTestID`): `pricing` / `signup` / `manage` for a view, the step name
 (`register`, `packs`, `failed`, …) for a step, `pack:<id>`, `group:<id>`, `section:<name>`,
 `modal:<name>`. One test plan reads the same on both stacks.
+
+`DisclaimerComponent` carries the web's `data-ww-disclaimer-action` values, prefixed because a
+SwiftUI identifier namespace is flat (`DisclaimerTestID`): `disclaimer-retry` on "Try again",
+`disclaimer-accept` on a card's "I have read and accept", and `disclaimer-accept-all` on the
+submit. The middle one is a toggle rather than a button here — this component accepts everything
+ticked in one call — but it is the same control: the one that accepts THAT disclaimer.
 
 ### Deliberately different from React
 

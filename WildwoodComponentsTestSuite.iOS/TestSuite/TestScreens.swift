@@ -487,6 +487,7 @@ private struct RegistrationSubscriptionTestScreen: View {
     @State private var registrationToken = ""
     @State private var prefillEmail = ""
     @State private var planSelection: SignupPlanSelection = .choose
+    @State private var planDefault: SignupPlanDefault = SignupPlanDefault.none
     @State private var packSetting: PackSetting = .offered
     @State private var tokenMode: SignupTokenMode = .auto
     @State private var paymentOrder: SignupPaymentOrder = .afterAccount
@@ -551,6 +552,13 @@ private struct RegistrationSubscriptionTestScreen: View {
                     .autocorrectionDisabled()
                 Picker("Plan step", selection: $planSelection) {
                     ForEach(SignupPlanSelection.allCases, id: \.self) { value in
+                        Text(value.rawValue).tag(value)
+                    }
+                }
+                // `free` opens the plan step MARKED on the app's free plan — still a tap away from
+                // being chosen. Nothing changes under `invite`, or once a link named a plan.
+                Picker("Plan default", selection: $planDefault) {
+                    ForEach(SignupPlanDefault.allCases, id: \.self) { value in
                         Text(value.rawValue).tag(value)
                     }
                 }
@@ -656,6 +664,7 @@ private struct RegistrationSubscriptionTestScreen: View {
             registrationToken: trimmed(registrationToken),
             prefillEmail: trimmed(prefillEmail),
             planSelection: planSelection,
+            planDefault: planDefault,
             packSelection: packSetting.signup,
             tokenMode: tokenMode,
             paymentOrder: paymentOrder,
@@ -678,6 +687,9 @@ private struct RegistrationSubscriptionTestScreen: View {
             registrationToken: trimmed(registrationToken),
             prefillEmail: trimmed(prefillEmail),
             planSelection: SignupPlanSelection.skip,
+            // Passed on purpose, and it must change NOTHING: the invite's plan comes from its
+            // token, so the picker above is ignored on this surface.
+            planDefault: planDefault,
             packSelection: SignupPackSelection.none,
             tokenMode: SignupTokenMode.required,
             paymentOrder: paymentOrder,
@@ -735,6 +747,7 @@ private struct RegistrationSubscriptionTestScreen: View {
             registrationToken,
             prefillEmail,
             planSelection.rawValue,
+            planDefault.rawValue,
             packSetting.rawValue,
             tokenMode.rawValue,
             paymentOrder.rawValue,

@@ -158,6 +158,19 @@ public struct SignupGrantEntry: Sendable, Equatable, Identifiable {
     }
 }
 
+/// The plan the grid opens on when nothing has chosen one.
+///
+/// Deliberately NOT one of ``SignupMachineOptions``'s settings, and deliberately not in
+/// `SignupMachine.swift`: the machine never sees this. It MARKS a card in the grid and the visitor
+/// still taps it, so a default that reached the reducer would be a choice nobody made.
+public enum SignupPlanDefault: String, Sendable, Equatable, CaseIterable {
+    /// Nothing is marked; the grid opens exactly as it always did.
+    case none
+    /// The app's free plan is marked — a suggestion the visitor still confirms, not a choice
+    /// already made. Ignored once a link or a grant has chosen.
+    case free
+}
+
 /// How a pack basket's card is dealt with on this device.
 public enum PackCheckoutCardBranch: String, Sendable, Equatable, CaseIterable {
     /// The quote found a card already on file: the basket is bought against it.
@@ -264,6 +277,44 @@ public enum SignupViewRules {
     /// Whether a parsed link carried anything this screen acts on.
     public static func signupLinkCarriesSelection(_ params: SignupParams) -> Bool {
         params != SignupParams()
+    }
+
+    // MARK: - The plan the grid opens on
+
+    /// The plan ``SignupPlanDefault/free`` suggests: the FIRST plan the catalog marks free, or
+    /// nothing at all.
+    ///
+    /// Nil in invite mode — an invite's plan comes from its token, so there is nothing to suggest —
+    /// and nil when the app sells no free plan, which is not a failure: the grid is then the one it
+    /// would have been anyway.
+    ///
+    /// A highlight only. The value goes to ``highlightTierId(selectionTierId:defaultTierId:preSelectedTierId:)``
+    /// and nowhere near ``SignupMachine``, so nothing here selects a plan, prices one or skips a
+    /// step.
+    public static func defaultTierId(
+        planDefault: SignupPlanDefault,
+        isInvite: Bool,
+        catalog: PublicCatalog?
+    ) -> String? {
+        guard planDefault == SignupPlanDefault.free, !isInvite, let catalog else { return nil }
+        for tier in catalog.tiers where tier.isFreeTier { return tier.id }
+        return nil
+    }
+
+    /// Which plan the grid opens MARKED, in the order the web resolves it.
+    ///
+    /// The visitor's own choice first; then the default above, which ``SignupPlanDefault/free``
+    /// puts there. A link's `preSelectedTierId` sits LAST on purpose: a stale or hand-edited one is
+    /// an id the flow already refused, so the grid opens on the host's default rather than on
+    /// nothing at all.
+    ///
+    /// None of the three is a choice — the grid marks one and the visitor still taps it.
+    public static func highlightTierId(
+        selectionTierId: String?,
+        defaultTierId: String?,
+        preSelectedTierId: String?
+    ) -> String? {
+        selectionTierId ?? defaultTierId ?? preSelectedTierId
     }
 
     // MARK: - What the panels say

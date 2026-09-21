@@ -100,6 +100,7 @@ public struct RegistrationSubscriptionSignupConfiguration {
     public var registrationToken: String?
     public var prefillEmail: String?
     public var planSelection: SignupPlanSelection
+    public var planDefault: SignupPlanDefault
     public var packSelection: SignupPackSelection
     public var tokenMode: SignupTokenMode
     public var paymentOrder: SignupPaymentOrder
@@ -125,6 +126,7 @@ public struct RegistrationSubscriptionSignupConfiguration {
         registrationToken: String? = nil,
         prefillEmail: String? = nil,
         planSelection: SignupPlanSelection = .choose,
+        planDefault: SignupPlanDefault = SignupPlanDefault.none,
         packSelection: SignupPackSelection = SignupPackSelection.none,
         tokenMode: SignupTokenMode = .auto,
         paymentOrder: SignupPaymentOrder = .afterAccount,
@@ -148,6 +150,7 @@ public struct RegistrationSubscriptionSignupConfiguration {
         self.registrationToken = registrationToken
         self.prefillEmail = prefillEmail
         self.planSelection = planSelection
+        self.planDefault = planDefault
         self.packSelection = packSelection
         self.tokenMode = tokenMode
         self.paymentOrder = paymentOrder
@@ -308,6 +311,7 @@ public extension RegistrationSubscriptionSignupView {
             registrationToken: configuration.registrationToken,
             prefillEmail: configuration.prefillEmail,
             planSelection: configuration.planSelection,
+            planDefault: configuration.planDefault,
             packSelection: configuration.packSelection,
             tokenMode: configuration.tokenMode,
             paymentOrder: configuration.paymentOrder,

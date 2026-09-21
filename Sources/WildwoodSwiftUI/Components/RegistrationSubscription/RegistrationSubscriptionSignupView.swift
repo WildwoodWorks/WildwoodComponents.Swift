@@ -51,6 +51,7 @@ public struct RegistrationSubscriptionSignupView: View {
     private let registrationToken: String?
     private let prefillEmail: String?
     private let planSelection: SignupPlanSelection
+    private let planDefault: SignupPlanDefault
     private let packSelection: SignupPackSelection
     private let tokenMode: SignupTokenMode
     private let paymentOrder: SignupPaymentOrder
@@ -87,6 +88,10 @@ public struct RegistrationSubscriptionSignupView: View {
     ///   - prefillEmail: pre-fills the username and email fields.
     ///   - planSelection: `.skip` leaves the plan to the app — a single-plan product, or one
     ///     chosen elsewhere. The plan summary card then offers no way back to the grid.
+    ///   - planDefault: `.free` opens the plan step MARKED on the app's free plan — a suggestion
+    ///     the visitor still taps, not a choice already made. Ignored once a link or a token's
+    ///     grant has chosen, and ignored in invite mode. The flow never sees it: it is a highlight
+    ///     and nothing else.
     ///   - packSelection: `.none` removes the pack STEP. It does NOT un-choose the packs a signup
     ///     link already chose; those are still bought after login, exactly as on the web.
     ///   - tokenMode: `.required` is invite redemption — a token is the only way in, there is no
@@ -124,6 +129,7 @@ public struct RegistrationSubscriptionSignupView: View {
         registrationToken: String? = nil,
         prefillEmail: String? = nil,
         planSelection: SignupPlanSelection = .choose,
+        planDefault: SignupPlanDefault = SignupPlanDefault.none,
         packSelection: SignupPackSelection = SignupPackSelection.none,
         tokenMode: SignupTokenMode = .auto,
         paymentOrder: SignupPaymentOrder = .afterAccount,
@@ -148,6 +154,7 @@ public struct RegistrationSubscriptionSignupView: View {
         self.registrationToken = registrationToken
         self.prefillEmail = prefillEmail
         self.planSelection = planSelection
+        self.planDefault = planDefault
         self.packSelection = packSelection
         self.tokenMode = tokenMode
         self.paymentOrder = paymentOrder
@@ -305,7 +312,7 @@ public struct RegistrationSubscriptionSignupView: View {
                 tiers: model.catalog?.tiers ?? [],
                 currency: model.currency,
                 billing: planBilling(model),
-                highlightTierId: model.state.selection.tierId ?? preSelectedTierId,
+                highlightTierId: highlightedTierId(model),
                 contactUrl: contactUrl,
                 labels: pricingLabels,
                 onBillingChange: { cycle in model.billing = cycle.rawValue },
@@ -571,6 +578,25 @@ public struct RegistrationSubscriptionSignupView: View {
     /// The driver keeps the cycle as the catalog's own frequency string; the grid wants the enum.
     private func planBilling(_ model: WildwoodSignupFlowModel) -> PricingBilling {
         model.billing == PricingBilling.annual.rawValue ? .annual : .monthly
+    }
+
+    /// Which plan the grid opens marked: the visitor's own choice, else what `planDefault` suggests,
+    /// else the link's plan. The default sits AHEAD of the link on purpose — see
+    /// ``SignupViewRules/highlightTierId(selectionTierId:defaultTierId:preSelectedTierId:)``.
+    ///
+    /// Invite mode is read off the flow's RESOLVED options rather than this view's parameter: an
+    /// invite link that landed on the form (DD-5) makes the token the only way in, and its plan
+    /// comes from the token, so there is nothing to suggest then either.
+    private func highlightedTierId(_ model: WildwoodSignupFlowModel) -> String? {
+        SignupViewRules.highlightTierId(
+            selectionTierId: model.state.selection.tierId,
+            defaultTierId: SignupViewRules.defaultTierId(
+                planDefault: planDefault,
+                isInvite: model.options.tokenMode == .required,
+                catalog: model.catalog
+            ),
+            preSelectedTierId: preSelectedTierId
+        )
     }
 
     private func creatingHeading(_ model: WildwoodSignupFlowModel) -> String {
