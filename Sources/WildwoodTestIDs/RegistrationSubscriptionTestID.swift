@@ -33,8 +33,13 @@ public enum RegistrationSubscriptionViewKind: String, Sendable, Equatable, CaseI
 /// One input on the registration form, by the name its identifier is built from.
 ///
 /// The first six are the web's `data-ww-field` values, unchanged. `registrationToken` is this
-/// contract's own: the web's token input carries an `id` and no `data-ww-field`, so there was no
+/// contract's own: REACT's token input carries an `id` and no `data-ww-field`, so there was no
 /// string to match, and `registrationToken` is the name `RegistrationFormData` already uses for it.
+///
+/// Razor is the exception, and the reason this says React rather than "the web": it does name that
+/// input, as `token`, and its own client script keys the collected form values off that spelling, so
+/// it cannot simply be renamed to match. A plan asks Razor for `token` and every other stack for
+/// `field:registrationToken`.
 public enum RegistrationFieldName: String, Sendable, Equatable, CaseIterable {
     case firstName
     case lastName
