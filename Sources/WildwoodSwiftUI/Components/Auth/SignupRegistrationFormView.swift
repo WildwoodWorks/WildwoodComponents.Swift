@@ -29,6 +29,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct SignupRegistrationFormView: View {
     /// A previous attempt's values, or the invitation's email. Applied once, on first appearance.

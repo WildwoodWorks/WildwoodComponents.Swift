@@ -8,6 +8,7 @@
 // The twin of the React Native `PricingSkeleton` part.
 
 import SwiftUI
+import WildwoodTestIDs
 
 public struct PricingSkeletonView: View {
     /// How many placeholder cards to draw.

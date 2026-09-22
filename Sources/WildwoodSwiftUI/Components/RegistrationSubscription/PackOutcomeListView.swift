@@ -8,6 +8,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct PackOutcomeListView: View {
     @Environment(\.wildwoodTheme) private var theme

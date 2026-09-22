@@ -4,6 +4,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct DisclaimerComponent: View {
     @Environment(\.wildwoodClient) private var client

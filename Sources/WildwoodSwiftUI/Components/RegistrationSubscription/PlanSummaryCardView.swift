@@ -11,6 +11,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct PlanSummaryCardView: View {
     @Environment(\.wildwoodTheme) private var theme

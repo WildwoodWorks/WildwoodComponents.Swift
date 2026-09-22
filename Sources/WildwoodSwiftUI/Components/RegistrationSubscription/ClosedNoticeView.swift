@@ -11,6 +11,7 @@
 // nowhere.
 
 import SwiftUI
+import WildwoodTestIDs
 
 public struct ClosedNoticeView: View {
     @Environment(\.openURL) private var openURL

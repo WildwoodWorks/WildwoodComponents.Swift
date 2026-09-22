@@ -25,6 +25,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct PaymentSheetView: View {
     /// Resolved by the surface that presents this, rather than read from the environment: a sheet

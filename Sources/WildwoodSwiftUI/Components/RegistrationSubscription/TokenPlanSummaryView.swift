@@ -13,6 +13,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct TokenPlanSummaryView: View {
     @Environment(\.wildwoodTheme) private var theme

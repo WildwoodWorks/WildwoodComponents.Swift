@@ -33,6 +33,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct RegistrationSubscriptionManageView: View {
     @Environment(\.wildwoodClient) private var client

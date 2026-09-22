@@ -14,11 +14,20 @@ let package = Package(
     products: [
         .library(name: "WildwoodCore", targets: ["WildwoodCore"]),
         .library(name: "WildwoodSwiftUI", targets: ["WildwoodSwiftUI"]),
+        // The accessibility-identifier vocabulary on its own, for a UI test target: Foundation
+        // only, no dependency on either library above, so asserting an identifier never means
+        // linking the views the test is driving. `WildwoodSwiftUI` re-exports it, so an app target
+        // keeps seeing these types without naming this product.
+        .library(name: "WildwoodTestIDs", targets: ["WildwoodTestIDs"]),
     ],
     targets: [
         .target(name: "WildwoodCore"),
-        .target(name: "WildwoodSwiftUI", dependencies: ["WildwoodCore"]),
+        .target(name: "WildwoodTestIDs"),
+        .target(name: "WildwoodSwiftUI", dependencies: ["WildwoodCore", "WildwoodTestIDs"]),
         .testTarget(name: "WildwoodCoreTests", dependencies: ["WildwoodCore"]),
+        // No dependency on WildwoodTestIDs: the identifier assertions reach it through
+        // WildwoodSwiftUI's re-export, which is the path a host takes, so the re-export is
+        // exercised rather than assumed.
         .testTarget(name: "WildwoodSwiftUITests", dependencies: ["WildwoodSwiftUI"]),
     ],
     swiftLanguageModes: [.v6]

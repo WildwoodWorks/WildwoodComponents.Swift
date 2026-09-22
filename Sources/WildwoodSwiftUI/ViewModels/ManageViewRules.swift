@@ -19,18 +19,11 @@
 
 import Foundation
 import WildwoodCore
+// ``ManageSection`` itself lives in `WildwoodTestIDs`, because the identifier vocabulary is built
+// from it; every rule about the sections is still here.
+import WildwoodTestIDs
 
 // MARK: - Sections and layout
-
-/// One panel of the manage view. Raw values are the web's `data-ww-section` values.
-public enum ManageSection: String, Sendable, Equatable, CaseIterable {
-    case subscription
-    case plans
-    case features
-    case addOns
-    case usage
-    case overrides
-}
 
 /// How the sections are arranged.
 public enum ManageLayout: String, Sendable, Equatable, CaseIterable {

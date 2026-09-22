@@ -234,6 +234,248 @@ SwiftUI identifier namespace is flat (`DisclaimerTestID`): `disclaimer-retry` on
 submit. The middle one is a toggle rather than a button here — this component accepts everything
 ticked in one call — but it is the same control: the one that accepts THAT disclaimer.
 
+`ConsentComponent` is the one case with no web attribute behind it — the banner there is found by
+its CSS classes — so `ConsentTestID` names the two elements a suite actually needs:
+`consent-banner` on the banner and `consent-accept-all` on its primary button. The banner also has
+an `accessibilityLabel`, but that is translated copy; the identifier is the stable locator.
+
+#### The vocabulary is a product of its own
+
+All three enums, plus `ManageSection` (which `section:<name>` is built from), live in
+**`WildwoodTestIDs`** — a Foundation-only library with no dependency on `WildwoodCore`,
+`WildwoodSwiftUI`, SwiftUI or UIKit. A UI test target adds that product alone and names an
+identifier without linking a single view:
+
+```swift
+.testTarget(
+    name: "MyAppUITests",
+    dependencies: [.product(name: "WildwoodTestIDs", package: "WildwoodComponents")]
+)
+```
+
+`WildwoodSwiftUI` re-exports the module, so nothing moved as far as app code is concerned: a host
+that writes `let sections: [ManageSection] = [.plans, .usage]` after `import WildwoodSwiftUI`
+compiles exactly as before.
+
+Two things are deliberately NOT in this product:
+
+- **The step names.** `RegistrationSubscriptionTestID.view(_:step:)` takes the step as a plain
+  optional string, and the signup view's step vocabulary (`loading`, `closed`, `register`, `token`, `plan`, `packs`,
+  `payment`, `creating`, `disclaimers`, `packCheckout`, `failed`, `success`) is the `SignupBody`
+  enum inside `WildwoodSwiftUI`. They are the web's `data-ww-step` values; spell them as strings,
+  or repeat them in your suite as the driver below does. A signed-in visitor is the one body that
+  hangs no step, so the root carries `signup` then.
+- **Plan cards.** `TierCard` carries no identifier of its own, so a plan is chosen by the copy on
+  its action button rather than by a hook. Packs do carry `pack:<id>`.
+
+#### A driver for XCUITest
+
+This is **documentation, not a shipped type**, and the reason is a hard one: **a target that
+`import`s XCTest can only be linked into a test bundle.** An app that links XCTest cannot load the
+framework outside a test host, so it fails at launch on a device and is rejected by App Store
+review. `WildwoodSwiftUI` depends on `WildwoodTestIDs`, and every host links `WildwoodSwiftUI` into
+its app — so an XCTest import anywhere in this product would break every app that ships the
+components, which is exactly the set of hosts the driver is for. The constants ship; the driver is
+yours to paste into your UI test target and change.
+
+```swift
+import Foundation
+import XCTest
+import WildwoodTestIDs
+
+/// Drives `RegistrationSubscriptionSignupView` from a UI test target.
+///
+/// Anything that can fail takes `file`/`line`, so a failure is reported against the test that
+/// called it rather than against this file.
+struct WildwoodSignupDriver {
+    /// The steps the signup view hangs off its root. These mirror `SignupBody` in
+    /// `WildwoodSwiftUI`, which a UI test target does not link — hence the copy.
+    enum Step: String {
+        case loading, closed, register, token, plan, packs, payment
+        case creating, disclaimers, packCheckout, failed, success
+    }
+
+    let app: XCUIApplication
+    var timeout: TimeInterval = 10
+
+    // MARK: - Locating
+
+    /// Anything carrying `identifier`, whatever element type it turned out to be. The view roots
+    /// are containers rather than controls, so the query is deliberately untyped.
+    func element(_ identifier: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: identifier).firstMatch
+    }
+
+    @discardableResult
+    func waitFor(
+        _ identifier: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        let found: XCUIElement = element(identifier)
+        XCTAssertTrue(
+            found.waitForExistence(timeout: timeout),
+            "Timed out waiting for the element identified as \(identifier)",
+            file: file,
+            line: line
+        )
+        return found
+    }
+
+    /// Waits for the signup root to be carrying `step`.
+    @discardableResult
+    func waitFor(
+        step: Step,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) -> XCUIElement {
+        waitFor(step.rawValue, file: file, line: line)
+    }
+
+    func tapButton(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) {
+        let button: XCUIElement = app.buttons[identifier]
+        guard button.waitForExistence(timeout: timeout) else {
+            XCTFail("Timed out waiting for the button identified as \(identifier)", file: file, line: line)
+            return
+        }
+        button.tap()
+    }
+
+    // MARK: - The registration form
+
+    func fillRegistration(
+        firstName: String,
+        lastName: String,
+        email: String,
+        password: String,
+        username: String? = nil,
+        token: String? = nil,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        waitFor(step: .register, file: file, line: line)
+        type(firstName, into: .firstName, file: file, line: line)
+        type(lastName, into: .lastName, file: file, line: line)
+        type(email, into: .email, file: file, line: line)
+        if let username { type(username, into: .username, file: file, line: line) }
+        type(password, into: .password, file: file, line: line)
+        type(password, into: .confirmPassword, file: file, line: line)
+        if let token { type(token, into: .registrationToken, file: file, line: line) }
+    }
+
+    func type(
+        _ value: String,
+        into field: RegistrationFieldName,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let identifier: String = RegistrationSubscriptionTestID.field(field)
+        guard waitFor(identifier, file: file, line: line).exists else { return }
+        // The two password inputs render as SecureFields until their reveal button is pressed, so
+        // they answer as secure text fields and the rest as plain ones.
+        let plain: XCUIElement = app.textFields[identifier]
+        let target: XCUIElement = plain.exists ? plain : app.secureTextFields[identifier]
+        guard target.exists else {
+            XCTFail("\(identifier) is on screen but is not a text field", file: file, line: line)
+            return
+        }
+        target.tap()
+        target.typeText(value)
+    }
+
+    func submitRegistration(file: StaticString = #filePath, line: UInt = #line) {
+        tapButton(RegistrationSubscriptionTestID.submitRegister, file: file, line: line)
+    }
+
+    // MARK: - Packs
+
+    /// Ticks a pack in the multi-select grid, where `pack:<id>` is on the card's own button. A
+    /// single-purchase card carries the identifier on its container instead and its button carries
+    /// only a label, so drive those by that label.
+    func selectPack(_ addOnId: String, file: StaticString = #filePath, line: UInt = #line) {
+        let row: XCUIElement = waitFor(
+            RegistrationSubscriptionTestID.pack(addOnId),
+            file: file,
+            line: line
+        )
+        guard row.exists else { return }
+        row.tap()
+    }
+
+    func continueFromPacks(file: StaticString = #filePath, line: UInt = #line) {
+        tapButton(RegistrationSubscriptionTestID.packsContinue, file: file, line: line)
+    }
+
+    // MARK: - Legal
+
+    /// Clears the consent banner if it is up. Not an assertion: an app that never shows one is
+    /// just as valid.
+    func dismissConsentBannerIfPresent() {
+        let button: XCUIElement = app.buttons[ConsentTestID.acceptAll]
+        if button.waitForExistence(timeout: timeout) { button.tap() }
+    }
+
+    /// Ticks every disclaimer and submits. `disclaimer-accept` is a TOGGLE here rather than the
+    /// web's per-disclaimer button, which is why this reads `switches` and not `buttons`.
+    func acceptDisclaimers(file: StaticString = #filePath, line: UInt = #line) {
+        waitFor(step: .disclaimers, file: file, line: line)
+        let toggles: XCUIElementQuery = app.switches.matching(identifier: DisclaimerTestID.accept)
+        for index in 0..<toggles.count {
+            let toggle: XCUIElement = toggles.element(boundBy: index)
+            if toggle.exists, (toggle.value as? String) != "1" { toggle.tap() }
+        }
+        tapButton(DisclaimerTestID.acceptAll, file: file, line: line)
+    }
+
+    // MARK: - How it ended
+
+    /// What the failed step SAID, or "" when nothing failed.
+    var errorMessage: String {
+        let message: XCUIElement = element(RegistrationSubscriptionTestID.signupErrorMessage)
+        return message.exists ? message.label : ""
+    }
+
+    func retry(file: StaticString = #filePath, line: UInt = #line) {
+        tapButton(RegistrationSubscriptionTestID.signupRetry, file: file, line: line)
+    }
+
+    func startOver(file: StaticString = #filePath, line: UInt = #line) {
+        tapButton(RegistrationSubscriptionTestID.signupStartOver, file: file, line: line)
+    }
+
+    func finish(file: StaticString = #filePath, line: UInt = #line) {
+        tapButton(RegistrationSubscriptionTestID.signupGetStarted, file: file, line: line)
+    }
+}
+```
+
+Used as:
+
+```swift
+import XCTest
+
+final class SignupUITests: XCTestCase {
+    func testSignupWithAPack() {
+        let app = XCUIApplication()
+        app.launch()
+
+        let signup = WildwoodSignupDriver(app: app)
+        signup.dismissConsentBannerIfPresent()
+        signup.fillRegistration(
+            firstName: "Ada",
+            lastName: "Lovelace",
+            email: "ada@example.com",
+            password: "correct horse battery staple"
+        )
+        signup.submitRegistration()
+        signup.selectPack("documents")
+        signup.continueFromPacks()
+        signup.waitFor(step: .success)
+        XCTAssertEqual(signup.errorMessage, "")
+    }
+}
+```
+
 ### Deliberately different from React
 
 | React prop | Here | Why |

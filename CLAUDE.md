@@ -12,10 +12,20 @@ against the same WildwoodAPI backend. Parity is coordinated through the Sync rep
 
 ```
 WildwoodCore        ← services, models, session/token mgmt, storage (zero UI imports)
-  └─► WildwoodSwiftUI
+WildwoodTestIDs     ← accessibility-identifier vocabulary (Foundation only, no dependencies)
+  └─► WildwoodSwiftUI   (depends on both; `@_exported import WildwoodTestIDs`)
         ├─ ViewModels/   ← @Observable classes ≈ @wildwood/react-shared hooks (no `import SwiftUI` here)
         └─ Components/   ← SwiftUI views ≈ @wildwood/react-native components (same names)
 ```
+
+- **WildwoodTestIDs** is its own library product so a host's XCUITest target can name
+  `disclaimer-accept-all` without linking any UI: `RegistrationSubscriptionTestID`,
+  `DisclaimerTestID`, `ConsentTestID`, `RegistrationSubscriptionViewKind`, `RegistrationFieldName`
+  and `ManageSection` (the type `section:<name>` is built from). `WildwoodSwiftUI` re-exports it,
+  so `ManageSection` stays reachable from `import WildwoodSwiftUI` as before — but imports are
+  file-scoped, so a file in `WildwoodSwiftUI` that NAMES one of those types needs its own
+  `import WildwoodTestIDs`. No XCTest-linking driver is shipped (a target that imports XCTest
+  cannot be linked into an app target); the README documents one to copy instead.
 
 - **WildwoodCore** mirrors `@wildwood/core`: `WildwoodClient` factory exposing `auth`, `session`,
   `ai` (chat, TTS, and `transcribeAudio` — server STT; no voice UI, see below), `aiFlow`,

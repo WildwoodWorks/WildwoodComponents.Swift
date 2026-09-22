@@ -4,6 +4,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 // MARK: - Status
 

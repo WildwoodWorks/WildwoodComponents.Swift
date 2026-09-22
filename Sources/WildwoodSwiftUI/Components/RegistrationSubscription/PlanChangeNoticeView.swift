@@ -16,6 +16,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct PlanChangeNoticeView: View {
     @Environment(\.wildwoodTheme) private var theme

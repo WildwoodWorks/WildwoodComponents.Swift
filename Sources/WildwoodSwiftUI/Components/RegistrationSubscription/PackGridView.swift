@@ -17,6 +17,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct PackGridView: View {
     @Environment(\.wildwoodTheme) private var theme

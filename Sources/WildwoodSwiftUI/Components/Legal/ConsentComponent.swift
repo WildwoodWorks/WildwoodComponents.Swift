@@ -8,6 +8,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct ConsentComponent: View {
     @Environment(\.wildwoodClient) private var client

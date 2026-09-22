@@ -19,6 +19,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct PackCheckoutView: View {
     @Environment(\.wildwoodTheme) private var theme
