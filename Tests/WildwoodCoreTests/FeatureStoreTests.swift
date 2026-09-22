@@ -95,6 +95,46 @@ struct FeatureStoreTests {
         #expect(backend.requests().count == 2)
     }
 
+    @Test func invalidateEntitlementsEmitsTheReasonOnceAndStillNeverFetches() async {
+        let backend = MockBackend()
+        let events = WildwoodEventEmitter()
+        let config = WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false)
+        let http = WildwoodHttpClient(config: config, urlSession: backend.makeSession())
+        let store = FeatureStore(appTier: AppTierService(http: http), defaultAppId: "app-1", events: events)
+        backend.stub("GET", "/api/app-tiers/app-1/user-features", .init(json: #"{"a":true}"#))
+        await store.load()
+        let epochBefore = store.epoch
+        var received: [String] = []
+        events.on { event in
+            if case .entitlementsChanged(let appId, let reason) = event {
+                received.append("\(appId)|\(reason.rawValue)")
+            }
+        }
+
+        store.invalidateEntitlements(reason: .tierChange)
+
+        // Emitted once, carrying the app and the reason…
+        #expect(received == ["app-1|tierChange"])
+        // …and invalidation stays lazy: one epoch bump (the store must not also
+        // listen to its own event) and no eager refetch.
+        #expect(store.features() == nil)
+        #expect(store.epoch == epochBefore + 1)
+        for _ in 0..<20 { await Task.yield() }
+        #expect(backend.requests().count == 1)
+    }
+
+    @Test func invalidateEntitlementsWithoutAnEmitterStillInvalidates() async {
+        let (store, backend) = makeStore()
+        backend.stub("GET", "/api/app-tiers/app-1/user-features", .init(json: #"{"a":true}"#))
+        await store.load()
+        let epochBefore = store.epoch
+
+        store.invalidateEntitlements(appId: "app-2", reason: .cancel)
+
+        #expect(store.features() == nil)
+        #expect(store.epoch == epochBefore + 1)
+    }
+
     @Test func loginAuthChangeInvalidatesAndBumpsTheEpoch() async {
         let backend = MockBackend()
         let events = WildwoodEventEmitter()

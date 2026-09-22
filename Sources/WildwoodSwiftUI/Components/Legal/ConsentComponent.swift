@@ -8,6 +8,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct ConsentComponent: View {
     @Environment(\.wildwoodClient) private var client
@@ -80,6 +81,7 @@ public struct ConsentComponent: View {
                     .buttonStyle(.bordered)
                 Button(acceptLabel(config)) { Task { await acceptAll() } }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier(ConsentTestID.acceptAll)
             }
         }
         .padding()
@@ -87,6 +89,7 @@ public struct ConsentComponent: View {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Cookie consent")
+        .accessibilityIdentifier(ConsentTestID.banner)
     }
 
     // MARK: - Preferences sheet

@@ -4,6 +4,13 @@
 import SwiftUI
 import WildwoodCore
 
+/// The public price list.
+///
+/// - Warning: Superseded by ``RegistrationSubscriptionPricingView``. It renders the same
+///   ``TierCard`` grid off the app's live public catalog, adds packs and a loading/unavailable
+///   state that never shows a price the server did not just quote. This component stays public
+///   and behaves exactly as before; nothing has been removed.
+@available(*, deprecated, message: "Use RegistrationAndSubscriptionComponent(.pricing(...)) or RegistrationSubscriptionPricingView, which render the same tier grid off the live public catalog and add packs. Still supported and unchanged.")
 public struct PricingDisplayComponent: View {
     @Environment(\.wildwoodClient) private var client
 

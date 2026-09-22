@@ -31,6 +31,16 @@ targets:
         WildwoodAPIBaseURL: "$(WILDWOOD_API_BASE_URL)"
         WildwoodAppId: "$(WILDWOOD_APP_ID)"
         UILaunchScreen: {}
+        # Custom URL scheme, so signup deep links and campaign links can be exercised without a
+        # web domain or associated-domains entitlement:
+        #   xcrun simctl openurl booted "wildwoodtest://signup?tier=pro&addons=docs,api"
+        # The Registration & Subscription screen parses it with SignupParams, the signup view
+        # applies it (DD-5), and `.wildwoodClient(_:)` hands the same URL to Campaign Attribution.
+        CFBundleURLTypes:
+          - CFBundleURLName: io.wildwoodworks.WildwoodComponentsTestSuite
+            CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - wildwoodtest
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.wildwoodworks.WildwoodComponentsTestSuite

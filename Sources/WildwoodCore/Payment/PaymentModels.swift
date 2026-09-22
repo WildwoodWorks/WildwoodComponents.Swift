@@ -215,6 +215,40 @@ public struct InitiatePaymentRequest: Codable, Sendable, Equatable {
     public var returnUrl: String?
     public var cancelUrl: String?
     public var metadata: [String: String]?
+    /// The address to bill the card to, for an app whose payment configuration sets
+    /// `requireBillingAddress`. Goes up as `BillingAddress` (PascalCase, the way every other
+    /// Wildwood request body names its properties) alongside the otherwise camelCase body, and
+    /// is omitted entirely when nil — exactly what the JS SDK posts. WildwoodAPI's
+    /// InitiatePaymentRequest has no such property yet, so today it is carried for the provider
+    /// layer rather than bound.
+    public var billingAddress: BillingAddress?
+    /// The client can confirm a Stripe SetupIntent. When set and the subscription starts with a
+    /// free trial, the server returns the trial's SetupIntent secret
+    /// (``PaymentClientSecretTypes/setupIntent``) so the card is saved for the charge at trial
+    /// end instead of skipping card collection.
+    public var supportsSetupIntent: Bool?
+
+    // Only `billingAddress` is renamed; every other key stays camelCase, the way this request
+    // has always gone up.
+    enum CodingKeys: String, CodingKey {
+        case providerId
+        case appId
+        case amount
+        case currency
+        case description
+        case customerId
+        case customerEmail
+        case orderId
+        case subscriptionId
+        case pricingModelId
+        case isSubscription
+        case billingFrequency
+        case returnUrl
+        case cancelUrl
+        case metadata
+        case billingAddress = "BillingAddress"
+        case supportsSetupIntent
+    }
 
     public init(
         providerId: String,
@@ -231,7 +265,9 @@ public struct InitiatePaymentRequest: Codable, Sendable, Equatable {
         billingFrequency: String? = nil,
         returnUrl: String? = nil,
         cancelUrl: String? = nil,
-        metadata: [String: String]? = nil
+        metadata: [String: String]? = nil,
+        billingAddress: BillingAddress? = nil,
+        supportsSetupIntent: Bool? = nil
     ) {
         self.providerId = providerId
         self.appId = appId
@@ -248,13 +284,72 @@ public struct InitiatePaymentRequest: Codable, Sendable, Equatable {
         self.returnUrl = returnUrl
         self.cancelUrl = cancelUrl
         self.metadata = metadata
+        self.billingAddress = billingAddress
+        self.supportsSetupIntent = supportsSetupIntent
     }
+}
+
+/// Billing address for a card payment. Its own properties stay camelCase — only the property
+/// this hangs off is renamed on the wire.
+public struct BillingAddress: Codable, Sendable, Equatable {
+    public var firstName: String
+    public var lastName: String
+    public var street: String
+    public var city: String
+    public var state: String
+    public var zipCode: String
+    public var country: String
+
+    public init(
+        firstName: String = "",
+        lastName: String = "",
+        street: String = "",
+        city: String = "",
+        state: String = "",
+        zipCode: String = "",
+        country: String = ""
+    ) {
+        self.firstName = firstName
+        self.lastName = lastName
+        self.street = street
+        self.city = city
+        self.state = state
+        self.zipCode = zipCode
+        self.country = country
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        firstName = try c.decodeIfPresent(String.self, forKey: .firstName) ?? ""
+        lastName = try c.decodeIfPresent(String.self, forKey: .lastName) ?? ""
+        street = try c.decodeIfPresent(String.self, forKey: .street) ?? ""
+        city = try c.decodeIfPresent(String.self, forKey: .city) ?? ""
+        state = try c.decodeIfPresent(String.self, forKey: .state) ?? ""
+        zipCode = try c.decodeIfPresent(String.self, forKey: .zipCode) ?? ""
+        country = try c.decodeIfPresent(String.self, forKey: .country) ?? ""
+    }
+}
+
+/// What an initiate-payment response's `clientSecret` confirms. String constants (not an enum)
+/// to match the API payload verbatim and mirror the JS union.
+public enum PaymentClientSecretTypes {
+    /// A charge.
+    public static let paymentIntent = "payment_intent"
+    /// A saved card for a trial.
+    public static let setupIntent = "setup_intent"
 }
 
 public struct InitiatePaymentResponse: Codable, Sendable, Equatable {
     public var success: Bool
     public var paymentIntentId: String?
     public var clientSecret: String?
+    /// What ``clientSecret`` confirms: a charge or a saved card for a trial.
+    /// One of ``PaymentClientSecretTypes``.
+    public var clientSecretType: String?
+    /// Free-trial length in days, when the subscription starts with one.
+    public var trialDays: Int?
+    /// When the free trial ends and the first charge is attempted.
+    public var trialEnd: Date?
     public var redirectUrl: String?
     public var approvalUrl: String?
     public var orderId: String?
@@ -275,6 +370,9 @@ public struct InitiatePaymentResponse: Codable, Sendable, Equatable {
         success = try c.decodeIfPresent(Bool.self, forKey: .success) ?? false
         paymentIntentId = try c.decodeIfPresent(String.self, forKey: .paymentIntentId)
         clientSecret = try c.decodeIfPresent(String.self, forKey: .clientSecret)
+        clientSecretType = try c.decodeIfPresent(String.self, forKey: .clientSecretType)
+        trialDays = try c.decodeIfPresent(Int.self, forKey: .trialDays)
+        trialEnd = try c.decodeIfPresent(Date.self, forKey: .trialEnd)
         redirectUrl = try c.decodeIfPresent(String.self, forKey: .redirectUrl)
         approvalUrl = try c.decodeIfPresent(String.self, forKey: .approvalUrl)
         orderId = try c.decodeIfPresent(String.self, forKey: .orderId)

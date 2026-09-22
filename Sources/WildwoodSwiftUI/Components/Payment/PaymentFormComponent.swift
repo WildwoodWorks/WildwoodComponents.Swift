@@ -16,6 +16,13 @@ public struct PaymentFormComponent: View {
     private let currency: String?
     private let descriptionText: String?
     private let customerId: String?
+    /// The pricing MODEL id the subscription attaches to. Omitting it is what turned a plan
+    /// purchase into a one-off charge with no renewal and no trial (JS 05dd7cb).
+    private let pricingModelId: String?
+    private let billingFrequency: String?
+    private let isSubscription: Bool
+    /// Free-trial days the plan advertises, for the button copy.
+    private let trialDays: Int?
     private let onPaymentSuccess: ((InitiatePaymentResponse) -> Void)?
     private let onPaymentError: ((String) -> Void)?
 
@@ -32,6 +39,10 @@ public struct PaymentFormComponent: View {
         currency: String? = nil,
         description: String? = nil,
         customerId: String? = nil,
+        pricingModelId: String? = nil,
+        billingFrequency: String? = nil,
+        isSubscription: Bool = false,
+        trialDays: Int? = nil,
         onPaymentSuccess: ((InitiatePaymentResponse) -> Void)? = nil,
         onPaymentError: ((String) -> Void)? = nil
     ) {
@@ -41,6 +52,10 @@ public struct PaymentFormComponent: View {
         self.currency = currency
         self.descriptionText = description
         self.customerId = customerId
+        self.pricingModelId = pricingModelId
+        self.billingFrequency = billingFrequency
+        self.isSubscription = isSubscription
+        self.trialDays = trialDays
         self.onPaymentSuccess = onPaymentSuccess
         self.onPaymentError = onPaymentError
     }
@@ -77,11 +92,17 @@ public struct PaymentFormComponent: View {
                 if isProcessing {
                     ProgressView().frame(maxWidth: .infinity)
                 } else {
-                    Text("Continue to Secure Checkout").frame(maxWidth: .infinity)
+                    Text(checkoutButtonLabel).frame(maxWidth: .infinity)
                 }
             }
             .buttonStyle(.borderedProminent)
             .disabled(isProcessing)
+
+            if WildwoodPaymentModel.hasTrialOffer(trialDays: trialDays) {
+                Text(WildwoodPaymentModel.trialChargeNote(amount: amount, currency: currency))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if let pending = pendingPayment {
                 VStack(spacing: 8) {
@@ -102,6 +123,14 @@ public struct PaymentFormComponent: View {
                 }
             }
         }
+    }
+
+    /// A trial is started, not bought — the same wording the payment screen uses.
+    private var checkoutButtonLabel: String {
+        if WildwoodPaymentModel.hasTrialOffer(trialDays: trialDays) {
+            return "Start \(WildwoodTrial.label(days: trialDays))"
+        }
+        return "Continue to Secure Checkout"
     }
 
     private func checkStatus(_ pending: InitiatePaymentResponse) async {
@@ -145,6 +174,9 @@ public struct PaymentFormComponent: View {
                     description: descriptionText,
                     customerId: customerId,
                     customerEmail: email.isEmpty ? nil : email,
+                    pricingModelId: pricingModelId,
+                    isSubscription: isSubscription ? true : nil,
+                    billingFrequency: billingFrequency,
                     metadata: metadata.isEmpty ? nil : metadata
                 )
             )

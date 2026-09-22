@@ -13,6 +13,10 @@ import Foundation
 
 @MainActor
 public final class ConsentService {
+    /// A consent-decision observer. Main-actor isolated like the event emitter's handler, so an
+    /// observer can touch UI state directly.
+    public typealias ConsentChangeHandler = @MainActor (ConsentState) -> Void
+
     private let http: WildwoodHttpClient
     private let storage: any WildwoodStorageAdapter
     private let defaultAppId: String
@@ -20,6 +24,7 @@ public final class ConsentService {
 
     private var config: PublicConsentConfig?
     private var state: ConsentState?
+    private var changeHandlers: [UUID: ConsentChangeHandler] = [:]
 
     public init(
         http: WildwoodHttpClient,
@@ -45,6 +50,27 @@ public final class ConsentService {
     /// return what the UI needs to render. No scripts are injected (no DOM on Apple platforms).
     @discardableResult
     public func initialize(appId: String? = nil) async throws -> ConsentInitResult {
+        let result = try await initializeState(appId: appId)
+        // Tell observers what the restored (stored) or defaulted state is. Without this a returning
+        // visitor with a valid stored decision never produces a change, so a consumer gated on
+        // consent — Campaign Attribution's persistence — would wait forever. Later changes emit
+        // from applyCategories and withdraw.
+        emitChange()
+        return result
+    }
+
+    /// Subscribe to consent decisions. Returns a subscription whose `cancel()` unsubscribes
+    /// (the native analog of `@wildwood/core`'s `onConsentChange`).
+    @discardableResult
+    public func onConsentChange(_ handler: @escaping ConsentChangeHandler) -> WildwoodSubscription {
+        let id = UUID()
+        changeHandlers[id] = handler
+        return WildwoodSubscription { [weak self] in
+            Task { @MainActor in self?.changeHandlers[id] = nil }
+        }
+    }
+
+    private func initializeState(appId: String? = nil) async throws -> ConsentInitResult {
         let config = try await fetchConfig(appId: appId)
         self.config = config
 
@@ -131,6 +157,7 @@ public final class ConsentService {
             await record(method: .rejectAll, consentString: encodeConsentString(state.categories))
         }
         clearCookie()
+        emitChange()
         return state
     }
 
@@ -175,6 +202,7 @@ public final class ConsentService {
         state?.categories = cats
         state?.decided = true
         await persistDecision(method: method)
+        emitChange()
         return state
     }
 
@@ -251,6 +279,15 @@ public final class ConsentService {
         let active = config?.categories ?? []
         // Only offer non-necessary categories that the config marks active.
         return ConsentCategory.nonNecessary.filter { active.contains($0) }
+    }
+
+    /// Announces the current state to every observer. A faulty observer must not break
+    /// initialize() or a consent decision for everyone else, so each is called independently.
+    private func emitChange() {
+        guard let state else { return }
+        for handler in changeHandlers.values {
+            handler(state)
+        }
     }
 
     private func requireInit() throws {

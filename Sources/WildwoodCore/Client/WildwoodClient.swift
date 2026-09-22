@@ -32,12 +32,29 @@ public final class WildwoodClient {
     /// Shared feature-entitlement cache backing FeatureGate — one bulk fetch
     /// per app, invalidated on auth changes and entitlement mutations.
     public let features: FeatureStore
+    /// Shared public-catalog cache (what the app sells) — one pair of public
+    /// requests per app + currency override, 60-second TTL, failures never cached.
+    public let catalog: PublicCatalogStore
     @ObservationIgnored public let feedback: FeedbackService
     @ObservationIgnored public let consent: ConsentService
-    /// Campaign Attribution: capture from `.onOpenURL`, then pass `getForRegistration()` in RegistrationRequest.
-    @ObservationIgnored public let attribution: AttributionService
+    /// Campaign Attribution: started by `initialize()`, fed by `.onOpenURL` (the
+    /// `.wildwoodClient(_:)` modifier wires both), and attached to every registration
+    /// automatically. Observable, so a view can read `first`/`last`/`persisted`.
+    public let attribution: AttributionService
     public let theme: ThemeService
     public let events: WildwoodEventEmitter
+
+    /// How this app confirms a payment or card-setup intent — the app-wide seam the registration
+    /// and subscription flows read when nothing nearer supplies one.
+    ///
+    /// `nil` is the honest default and a supported state: with no handler nothing here ever tells
+    /// the server it can confirm an intent, asks for a SetupIntent, or collects a card for a pack
+    /// checkout, and an answer that needs a bank challenge is reported as not completed with the
+    /// "finish this purchase on the web" copy. See ``WildwoodPaymentActionHandler``.
+    ///
+    /// A SwiftUI host may instead scope one to a subtree with `.wildwoodPaymentActionHandler(_:)`,
+    /// or hand one straight to a component; the nearest wins.
+    public var paymentActionHandler: (any WildwoodPaymentActionHandler)? = nil
 
     public init(config: WildwoodConfig, urlSession: URLSession = .shared) {
         self.config = config
@@ -65,22 +82,50 @@ public final class WildwoodClient {
         let appTier = AppTierService(http: http)
         self.appTier = appTier
         self.features = FeatureStore(appTier: appTier, defaultAppId: config.appId, events: events)
+        self.catalog = PublicCatalogStore(appTier: appTier, defaultAppId: config.appId)
         self.feedback = FeedbackService(http: http, defaultAppId: config.appId ?? "")
         let consent = ConsentService(http: http, storage: storage, defaultAppId: config.appId ?? "")
         self.consent = consent
-        self.attribution = AttributionService(http: http, storage: storage, consent: consent, defaultAppId: config.appId ?? "")
+        let attribution = AttributionService(
+            http: http,
+            storage: storage,
+            consent: consent,
+            defaultAppId: config.appId ?? "",
+            platform: config.attributionPlatform ?? AttributionService.defaultPlatform,
+            events: events,
+            enabled: config.attributionEnabled
+        )
+        self.attribution = attribution
         self.theme = ThemeService(storage: storage, events: events)
+
+        // Registration paths carry the captured campaign touches and clear them after a recorded
+        // signup; a provider sign-in claims them for the new account. Closures rather than a
+        // reference: AttributionService is main-actor isolated and AuthService is not, so the hop
+        // is explicit (JS: `auth.setAttributionProvider(attribution)`).
+        auth.setAttributionProvider(
+            AttributionRegistrationSource(
+                payload: { await attribution.getForRegistration() },
+                clear: { await attribution.clear() }
+            )
+        )
     }
 
-    /// Restore the persisted session and theme. Call once at app launch
-    /// (the SwiftUI `wildwoodClient(_:)` modifier does this automatically).
+    /// Restore the persisted session and theme, and start Campaign Attribution (load the app's
+    /// attribution config, restore persisted touches). Call once at app launch (the SwiftUI
+    /// `wildwoodClient(_:)` modifier does this automatically, and also captures opened URLs).
+    ///
+    /// Ordering note: consent may not be initialized yet when this runs. That is fine — the
+    /// touches stay in memory and the attribution engine's consent subscription re-applies the
+    /// persistence gate as soon as `consent.initialize()` (or a decision) reports a state.
     public func initialize() async {
         theme.initialize()
         await session.initialize()
+        await attribution.initialize()
     }
 
     public func dispose() {
         session.dispose()
+        attribution.dispose()
         events.removeAllListeners()
     }
 }

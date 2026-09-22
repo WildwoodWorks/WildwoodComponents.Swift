@@ -4,6 +4,7 @@
 
 import SwiftUI
 import WildwoodCore
+import WildwoodTestIDs
 
 public struct DisclaimerComponent: View {
     @Environment(\.wildwoodClient) private var client
@@ -57,6 +58,7 @@ public struct DisclaimerComponent: View {
                         Text("Try again").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier(DisclaimerTestID.retry)
                 }
             } else if disclaimers.isEmpty {
                 ContentUnavailableView(
@@ -94,6 +96,7 @@ public struct DisclaimerComponent: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isSubmitting || !requiredAccepted)
+                    .accessibilityIdentifier(DisclaimerTestID.acceptAll)
                 }
             }
         }
@@ -189,10 +192,13 @@ private struct DisclaimerCard: View {
             }
             .frame(maxHeight: 180)
 
+            // The web's per-disclaimer `accept` button, in this stack's shape: it ticks rather
+            // than posts, because the submit below accepts everything ticked in one call.
             Toggle(isOn: Binding(get: { isAccepted }, set: onToggle)) {
                 Text("I have read and accept")
                     .font(.subheadline)
             }
+            .accessibilityIdentifier(DisclaimerTestID.accept)
         }
         .padding()
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 14))

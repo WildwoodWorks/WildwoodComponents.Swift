@@ -120,6 +120,45 @@ struct WildwoodErrorTests {
         #expect(error.message == "Bad credentials")
         #expect(error.code == .twoFactorRequired)
     }
+
+    @Test func readsErrorMessageWhenThereIsNoMessage() {
+        // The action endpoints answer a refusal with errorMessage, not message.
+        let body = Data(#"{"success":false,"errorMessage":"Already subscribed"}"#.utf8)
+        let error = WildwoodError.fromResponse(status: 400, body: body, fallbackMessage: "fallback")
+        #expect(error.message == "Already subscribed")
+    }
+
+    @Test func messageFieldOrderIsMessageThenErrorMessageThenErrorThenTitle() {
+        func message(_ json: String) -> String {
+            WildwoodError.fromResponse(status: 400, body: Data(json.utf8), fallbackMessage: "fallback").message
+        }
+        #expect(message(#"{"message":"m","errorMessage":"em","error":"e","title":"t"}"#) == "m")
+        #expect(message(#"{"errorMessage":"em","error":"e","title":"t"}"#) == "em")
+        #expect(message(#"{"error":"e","title":"t"}"#) == "e")
+        #expect(message(#"{"title":"t"}"#) == "t")
+    }
+
+    @Test func errorCodeMappingIsUnchangedByTheErrorMessageKey() {
+        let body = Data(#"{"errorMessage":"Nope","errorCode":"Forbidden"}"#.utf8)
+        let error = WildwoodError.fromResponse(status: 403, body: body, fallbackMessage: "fallback")
+        #expect(error.message == "Nope")
+        #expect(error.code == .forbidden)
+        // The raw body stays available for the server's own (unmapped) codes.
+        #expect(error.details != nil)
+    }
+
+    @Test func theMessageIsNeverEmpty() {
+        // HTTP/2 carries no status text, so an unrecognized body used to produce an empty
+        // message — which callers that branch on "is there an error message?" read as no error.
+        let unrecognized = WildwoodError.fromResponse(status: 502, body: Data("{}".utf8), fallbackMessage: "")
+        #expect(unrecognized.message == "Request failed (HTTP 502)")
+
+        let blankMessage = WildwoodError.fromResponse(status: 500, body: Data(#"{"message":""}"#.utf8), fallbackMessage: "")
+        #expect(blankMessage.message == "Request failed (HTTP 500)")
+
+        let noBody = WildwoodError.fromResponse(status: 404, body: nil, fallbackMessage: "")
+        #expect(noBody.message == "Request failed (HTTP 404)")
+    }
 }
 
 // MARK: - HTTP client

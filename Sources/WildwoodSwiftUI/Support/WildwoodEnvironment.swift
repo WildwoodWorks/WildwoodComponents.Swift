@@ -7,19 +7,51 @@ import WildwoodCore
 
 public extension EnvironmentValues {
     @Entry var wildwoodClient: WildwoodClient? = nil
+
+    /// The payment-action handler in force for this subtree, seeded by
+    /// `.wildwoodPaymentActionHandler(_:)`. Nil — no handler — is the default and a supported
+    /// state; see ``WildwoodPaymentActionHandler``.
+    @Entry var wildwoodPaymentActionHandler: (any WildwoodPaymentActionHandler)? = nil
 }
 
 public extension View {
-    /// Inject a WildwoodClient, initialize it (session restore, theme load) on
-    /// first appearance, and apply the client's current theme
-    /// (`WildwoodTheme.named(client.theme.theme)`) to the subtree — live, since
-    /// ThemeService is @Observable — unless the host pinned one with `.wildwoodTheme(_:)`.
+    /// Inject a WildwoodClient, initialize it (session restore, theme load, Campaign Attribution
+    /// start) on first appearance, capture campaign touches from every opened URL, and apply the
+    /// client's current theme (`WildwoodTheme.named(client.theme.theme)`) to the subtree — live,
+    /// since ThemeService is @Observable — unless the host pinned one with `.wildwoodTheme(_:)`.
     func wildwoodClient(_ client: WildwoodClient) -> some View {
         environment(\.wildwoodClient, client)
             .modifier(WildwoodServiceThemeModifier(client: client))
+            .wildwoodAttributionCapture(client)
             .task {
                 await client.initialize()
             }
+    }
+
+    /// Supply the payment-action handler every Wildwood surface in this subtree uses — the
+    /// SwiftUI analog of React Native's `WildwoodProvider paymentActionHandler` prop.
+    ///
+    /// Precedence, nearest first: a component's own parameter, then this modifier, then
+    /// ``WildwoodClient/paymentActionHandler``. Resolved in one place by
+    /// ``WildwoodPaymentAction/resolve(parameter:environment:client:)`` so no component
+    /// re-derives it.
+    func wildwoodPaymentActionHandler(_ handler: (any WildwoodPaymentActionHandler)?) -> some View {
+        environment(\.wildwoodPaymentActionHandler, handler)
+    }
+
+    /// Feed deep links and universal links to Campaign Attribution — the native stand-in for the
+    /// web SDK's landing-URL read, and the same wiring the React Native provider does with
+    /// `Linking`. `.wildwoodClient(_:)` applies this for you; apply it yourself only when the
+    /// client is injected some other way, and apply it once (a second copy would re-capture the
+    /// same URL). Attribution off (`WildwoodConfig.attributionEnabled == false`) makes it a no-op.
+    func wildwoodAttributionCapture(_ client: WildwoodClient) -> some View {
+        onOpenURL { url in
+            // Hop explicitly: AttributionService is main-actor isolated, and the delivery
+            // closure's isolation is SwiftUI's business, not ours.
+            Task { @MainActor in
+                _ = client.attribution.capture(url: url)
+            }
+        }
     }
 }
 
