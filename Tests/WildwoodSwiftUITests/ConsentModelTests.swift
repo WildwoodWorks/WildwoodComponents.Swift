@@ -33,4 +33,16 @@ struct ConsentModelTests {
     @Test func activeCategoriesEmptyBeforeConfigLoads() {
         #expect(makeModel().activeCategories().isEmpty)
     }
+
+    @Test func theBannersHooksAreTheCrossStackStrings() {
+        // React Native spells both the same. They are the web's `ww-consent-banner` and
+        // `ww-consent-btn-primary` without the package prefix, named for what they are rather than
+        // carried over from a `data-ww-*` attribute — the web's banner has none.
+        #expect(ConsentTestID.banner == "consent-banner")
+        #expect(ConsentTestID.acceptAll == "consent-accept-all")
+
+        // Prefixed for the same reason the disclaimer component's are: a flat namespace shared with
+        // `data-ww-view`/`data-ww-step` would put `accept-all` within reach of two components.
+        #expect(ConsentTestID.acceptAll != DisclaimerTestID.acceptAll)
+    }
 }

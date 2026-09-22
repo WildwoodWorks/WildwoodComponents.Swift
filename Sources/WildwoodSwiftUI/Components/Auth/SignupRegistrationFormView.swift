@@ -17,6 +17,11 @@
 // now waits for a token. The wizard used to let the form through with an empty one and have the
 // server refuse it.
 //
+// Every input and the submit carry an accessibility identifier from
+// ``RegistrationSubscriptionTestID`` rather than leaving a suite to find them by their placeholder
+// copy. The copy is English, it is a caller-supplied parameter in the submit's case, and it is meant
+// to be localised — a locator keyed on it stops finding the field the day it is translated.
+//
 // It collects and hands back; it never calls a server. Everything it knows about the app's
 // registration settings arrives as two booleans, so the caller — the wizard from its
 // `AuthenticationConfiguration`, the signup view from its ``SignupRegistrationMode`` — owns that
@@ -88,27 +93,45 @@ public struct SignupRegistrationFormView: View {
             TextField("First name", text: $firstName)
                 .textFieldStyle(.roundedBorder)
                 .textContentType(.givenName)
+                .accessibilityIdentifier(RegistrationSubscriptionTestID.field(.firstName))
             TextField("Last name", text: $lastName)
                 .textFieldStyle(.roundedBorder)
                 .textContentType(.familyName)
+                .accessibilityIdentifier(RegistrationSubscriptionTestID.field(.lastName))
             TextField("Email", text: $email)
                 .textFieldStyle(.roundedBorder)
                 .textContentType(.emailAddress)
                 .keyboardType(.emailAddress)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .accessibilityIdentifier(RegistrationSubscriptionTestID.field(.email))
             TextField("Username (optional)", text: $username)
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            WildwoodSecureField("Password", text: $password, contentType: .newPassword)
-            WildwoodSecureField("Confirm password", text: $confirmPassword, contentType: .newPassword)
+                .accessibilityIdentifier(RegistrationSubscriptionTestID.field(.username))
+            // The identifier goes THROUGH the control rather than onto it: the reveal button is a
+            // second accessibility element inside, and an identifier applied out here would reach
+            // it too.
+            WildwoodSecureField(
+                "Password",
+                text: $password,
+                contentType: .newPassword,
+                identifier: RegistrationSubscriptionTestID.field(.password)
+            )
+            WildwoodSecureField(
+                "Confirm password",
+                text: $confirmPassword,
+                contentType: .newPassword,
+                identifier: RegistrationSubscriptionTestID.field(.confirmPassword)
+            )
 
             if showTokenField {
                 TextField(tokenPlaceholder, text: $registrationToken)
                     .textFieldStyle(.roundedBorder)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .accessibilityIdentifier(RegistrationSubscriptionTestID.field(.registrationToken))
             }
 
             Button {
@@ -118,6 +141,7 @@ public struct SignupRegistrationFormView: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(isBusy || !canSubmit)
+            .accessibilityIdentifier(RegistrationSubscriptionTestID.submitRegister)
 
             if let onCancel, let cancelTitle, !cancelTitle.isEmpty {
                 Button(cancelTitle) { onCancel() }

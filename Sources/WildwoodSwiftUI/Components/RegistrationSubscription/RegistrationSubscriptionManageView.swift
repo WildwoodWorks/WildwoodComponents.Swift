@@ -149,6 +149,11 @@ public struct RegistrationSubscriptionManageView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // `.contain` before the identifier, as on the stacked sections below: a `ScrollView` is not
+        // itself an accessibility element, and an identifier on one is free to propagate to its
+        // descendants instead of naming a queryable element of its own. `.contain` asks for the
+        // element, and children stay individually accessible.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(
             RegistrationSubscriptionTestID.view(.manage, step: ManageViewRules.stepIdentifier(flow?.step))
         )
@@ -565,8 +570,11 @@ private struct ManagePackSheet: View {
     @ViewBuilder private var stage: some View {
         if finished {
             PackOutcomeListView(packs: outcomes, labels: labels)
+            // The sheet's own way out, over the outcomes. Not the Continue of the grid this sheet
+            // opened on — that one is ``PackGridView``'s `packs-continue`.
             Button(labels.continueLabel) { onClose() }
                 .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier(RegistrationSubscriptionTestID.packsModalContinue)
         } else if let checkout {
             PackCheckoutView(model: checkout, labels: labels)
         } else {

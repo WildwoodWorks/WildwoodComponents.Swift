@@ -136,6 +136,48 @@ struct SignupViewTests {
         #expect(SignupBody.packCheckout.rawValue == "packCheckout")
     }
 
+    @Test func theRegistrationFormsInputsCarryTheWebsFieldNames() {
+        // The first six are the web's `data-ww-field` values and React Native's `field:` ids,
+        // unchanged. The seventh is the contract's own — the web's token input carries an id and no
+        // `data-ww-field` — and is spelled as the wire format spells it.
+        #expect(RegistrationSubscriptionTestID.field(.firstName) == "field:firstName")
+        #expect(RegistrationSubscriptionTestID.field(.lastName) == "field:lastName")
+        #expect(RegistrationSubscriptionTestID.field(.username) == "field:username")
+        #expect(RegistrationSubscriptionTestID.field(.email) == "field:email")
+        #expect(RegistrationSubscriptionTestID.field(.password) == "field:password")
+        #expect(RegistrationSubscriptionTestID.field(.confirmPassword) == "field:confirmPassword")
+        #expect(RegistrationSubscriptionTestID.field(.registrationToken) == "field:registrationToken")
+
+        // The form's submit. The web's `data-ww-action` value, carried over unchanged, because the
+        // copy on the button is a caller-supplied parameter and so cannot be the hook.
+        #expect(RegistrationSubscriptionTestID.submitRegister == "submit-register")
+
+        // Seven distinct fields, seven distinct ids — the form is filled field by field.
+        let ids: Set<String> = Set(RegistrationFieldName.allCases.map { RegistrationSubscriptionTestID.field($0) })
+        #expect(ids.count == RegistrationFieldName.allCases.count)
+    }
+
+    @Test func theFailedStepNamesWhatItSaid() {
+        // The same string in all three stacks that can carry one, so a driver asks the same question
+        // whichever it is pointed at: the web reads `[data-ww-error-message]`, React Native and this
+        // stack read `signup-error-message`. Without it a driver can report THAT a signup failed and
+        // never what the server said about it, which is the difference between a useful failure and
+        // a bug report that starts "it did not work".
+        #expect(RegistrationSubscriptionTestID.signupErrorMessage == "signup-error-message")
+        #expect(RegistrationSubscriptionTestID.signupErrorMessage != RegistrationSubscriptionTestID.signupRetry)
+    }
+
+    @Test func aFieldIdCanNeverBeReadAsAStepId() {
+        // The reason for the `field:` prefix. Fields and steps are two vocabularies that grow
+        // independently, and a collision would surface as a query finding two elements, nowhere
+        // near the change that caused it.
+        let steps: Set<String> = Set(allBodies.map(\.rawValue))
+        for field in RegistrationFieldName.allCases {
+            #expect(!steps.contains(RegistrationSubscriptionTestID.field(field)))
+        }
+        #expect(!steps.contains(RegistrationSubscriptionTestID.submitRegister))
+    }
+
     // MARK: - What the token granted, shown beside the step
 
     @Test func whatTheTokenGrantedShowsBesideEveryBodyTheWebShowsItBeside() {

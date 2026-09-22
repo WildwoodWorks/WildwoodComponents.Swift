@@ -7,8 +7,15 @@
 // which of them names an element — a test plan written against one stack then reads the same on the
 // other. React Native reached the same arrangement in `testIds.ts`; these are its functions.
 //
-// Packs and groups are namespaced, because a flat identifier namespace cannot tell
-// `data-ww-pack="core"` from `data-ww-group="core"` the way two different attributes can.
+// Packs, groups, sections, modals and form fields are namespaced, because a flat identifier
+// namespace cannot tell `data-ww-pack="core"` from `data-ww-group="core"` the way two different
+// attributes can. The prefix is the attribute's own name, so `data-ww-modal="packs"` is
+// `modal:packs` here and in React Native's `testIds.ts`.
+//
+// This is more than the three views' own spelling. The signup view mounts the registration form as
+// a step of its own, so a bare `email` on one of that form's inputs would answer to the same string
+// as a step of the flow around it; the form's hooks therefore live here too. The disclaimer
+// component, which the same view also mounts, has its own prefixed namespace in ``DisclaimerTestID``.
 //
 // Deliberately NOT inside `#if os(iOS)`: a test on a macOS host asserts these strings, and there is
 // nothing platform-specific about a string.
@@ -21,6 +28,21 @@ public enum RegistrationSubscriptionViewKind: String, Sendable, Equatable, CaseI
     case pricing
     case signup
     case manage
+}
+
+/// One input on the registration form, by the name its identifier is built from.
+///
+/// The first six are the web's `data-ww-field` values, unchanged. `registrationToken` is this
+/// contract's own: the web's token input carries an `id` and no `data-ww-field`, so there was no
+/// string to match, and `registrationToken` is the name `RegistrationFormData` already uses for it.
+public enum RegistrationFieldName: String, Sendable, Equatable, CaseIterable {
+    case firstName
+    case lastName
+    case username
+    case email
+    case password
+    case confirmPassword
+    case registrationToken
 }
 
 /// The accessibility identifiers the three views hang off their elements.
@@ -56,6 +78,11 @@ public enum RegistrationSubscriptionTestID {
         "modal:" + modal
     }
 
+    /// One input on the registration form. The web's `data-ww-field`.
+    public static func field(_ field: RegistrationFieldName) -> String {
+        "field:" + field.rawValue
+    }
+
     /// The button that loads the catalog again after a failure.
     public static let retryButton: String = "pricing-retry"
     /// The placeholder shown while the catalog loads.
@@ -64,6 +91,12 @@ public enum RegistrationSubscriptionTestID {
     public static let billingToggle: String = "billing-toggle"
     /// The multi-select pack grid's Continue.
     public static let packsContinue: String = "packs-continue"
+
+    // MARK: Registration form
+
+    /// The form's submit. The web's `data-ww-action="submit-register"`, carried over unchanged —
+    /// the copy on the button is a caller-supplied parameter, so the copy cannot be the hook.
+    public static let submitRegister: String = "submit-register"
 
     // MARK: Signup
 
@@ -78,6 +111,14 @@ public enum RegistrationSubscriptionTestID {
     public static let planChange: String = "plan-change"
     /// Backing out of the plan's card step.
     public static let paymentLeave: String = "payment-leave"
+    /// What the failed step SAID, as opposed to the fact that it failed.
+    ///
+    /// The other two web stacks read the reason from an element of its own rather than from the
+    /// panel's copy, because the style the message carries there is shared with the processing
+    /// steps' "please wait" - so a driver falling back to it reports boilerplate as the cause of a
+    /// genuine failure. This stack has no such collision, but the hook is the same string in all
+    /// three so one driver can ask the same question of any of them.
+    public static let signupErrorMessage: String = "signup-error-message"
     /// Resumes a failed signup where it stopped.
     public static let signupRetry: String = "signup-retry"
     /// Throws the attempt away and returns to the form.
@@ -107,6 +148,17 @@ public enum RegistrationSubscriptionTestID {
     public static let packsModal: String = "modal:packs"
     /// Opens that picker.
     public static let addPacks: String = "add-packs"
+    /// The pack sheet's OWN call to action, the one over the outcomes.
+    ///
+    /// Not ``packsContinue``, which belongs to the grid ``PackGridView`` renders in the sheet's
+    /// FIRST stage: one string for both would leave a test that pressed "the Continue" unable to
+    /// say which stage of the sheet it was in. Not `modal:packs-continue` either — the `modal:`
+    /// prefix names a sheet, and its value space is the web's two `data-ww-modal` values, so a third
+    /// name there would assert a sheet that does not exist.
+    ///
+    /// The web's outcome Continue carries no hook at all, so there was no string to match. React
+    /// Native coined this one; it is spelled the same on both stacks.
+    public static let packsModalContinue: String = "packs-modal-continue"
     /// What a plan change says about itself while it is running, or after it failed.
     public static let planChangeNotice: String = "plan-change-notice"
     /// Runs the failed plan-change step again.

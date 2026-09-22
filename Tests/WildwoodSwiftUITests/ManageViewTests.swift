@@ -233,6 +233,19 @@ struct ManageViewSectionTests {
         #expect(RegistrationSubscriptionTestID.paymentModal == "modal:payment")
         #expect(RegistrationSubscriptionTestID.packsModal == "modal:packs")
     }
+
+    @Test func thePackSheetsOwnContinueIsNotTheGridsContinue() {
+        // React Native's string for the same button, so a plan written against one reads on both.
+        #expect(RegistrationSubscriptionTestID.packsModalContinue == "packs-modal-continue")
+
+        // The grid the sheet opens on keeps `packs-continue`. One string for both stages would
+        // leave a test that pressed "the Continue" unable to say which stage it was in.
+        #expect(RegistrationSubscriptionTestID.packsModalContinue != RegistrationSubscriptionTestID.packsContinue)
+
+        // Not a third `modal:` value: that prefix's value space is the web's two `data-ww-modal`
+        // values, and a sheet by this name does not exist.
+        #expect(!RegistrationSubscriptionTestID.packsModalContinue.hasPrefix("modal:"))
+    }
 }
 
 // MARK: - The card, the notice and the store

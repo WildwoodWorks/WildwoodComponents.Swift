@@ -185,6 +185,11 @@ public struct RegistrationSubscriptionSignupView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // `.contain` before the identifier, as on the order summary below: a `ScrollView` is not
+        // itself an accessibility element, and an identifier on one is free to propagate to its
+        // descendants instead of naming a queryable element of its own. `.contain` asks for the
+        // element, and children stay individually accessible.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(
             RegistrationSubscriptionTestID.view(.signup, step: SignupViewRules.stepIdentifier(currentBody))
         )
@@ -487,6 +492,7 @@ public struct RegistrationSubscriptionSignupView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .accessibilityIdentifier(RegistrationSubscriptionTestID.signupErrorMessage)
 
             Button(labels.tryAgain) { model.retry() }
                 .buttonStyle(.borderedProminent)
