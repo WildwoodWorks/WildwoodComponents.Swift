@@ -391,6 +391,7 @@ public struct SignupWithSubscriptionComponent: View {
         if let details, !details.isValid {
             errorMessage = SignupPlanRules.nonBlank(details.errorMessage)
                 ?? "That registration token isn't valid. Check it and try again."
+            SignupFunnel.error(client, category: "invalid_token")
             return
         }
 
@@ -416,6 +417,7 @@ public struct SignupWithSubscriptionComponent: View {
         // Nothing can be registered before the form has been filled in; the step order makes this
         // unreachable, and stating it keeps the details in one place.
         guard let form = submittedForm else { return }
+        if let tier { SignupFunnel.planSelected(client, tierId: tier.id, tierName: tier.name) }
         errorMessage = ""
         warningMessage = ""
         subscriptionFailed = false
@@ -453,6 +455,7 @@ public struct SignupWithSubscriptionComponent: View {
                 client: client, request: request, attempt: attempt
             ) {
                 let message = refusal.errorMessage ?? "Registration failed. Please try again."
+                SignupFunnel.error(client, code: refusal.errorCode)
                 errorMessage = message
                 step = tokenGrant == nil ? .tierSelection : .tokenPlan
                 onSignupError?(message)
@@ -472,6 +475,7 @@ public struct SignupWithSubscriptionComponent: View {
             if tokenGrant == nil, let tier {
                 let needsPayment = !tier.isFreeTier && (pricing?.price ?? 0) > 0
                 if needsPayment, collectedTransactionId == nil, let onPaymentRequired {
+                    SignupFunnel.checkoutStart(client, pricingId: pricing?.id, tierId: tier.id)
                     let args = WildwoodPaymentRequiredArgs(
                         tier: tier,
                         pricing: pricing,
@@ -526,6 +530,7 @@ public struct SignupWithSubscriptionComponent: View {
             }
         } catch {
             let message = (error as? WildwoodError)?.message ?? error.localizedDescription
+            SignupFunnel.error(client, error)
             errorMessage = message
             step = tokenGrant == nil ? .tierSelection : .tokenPlan
             onSignupError?(message)

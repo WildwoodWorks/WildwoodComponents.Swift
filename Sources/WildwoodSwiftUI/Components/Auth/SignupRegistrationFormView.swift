@@ -62,6 +62,12 @@ public struct SignupRegistrationFormView: View {
     /// The initial values are applied ONCE: a re-appearance (a step back and forward again) must
     /// not throw away what the visitor has typed since.
     @State private var seeded: Bool = false
+    /// The field values as seeded, so filling them in on appearance is not taken for the visitor
+    /// starting the form. Nil until the seed ran.
+    @State private var seededValues: [String]?
+    /// Campaign Attribution funnel: signup_start goes out once per form, on the first edit.
+    @State private var funnelStarted: Bool = false
+    @Environment(\.wildwoodClient) private var client
 
     public init(
         initialFormData: RegistrationFormData? = nil,
@@ -149,7 +155,22 @@ public struct SignupRegistrationFormView: View {
                     .font(.footnote)
             }
         }
-        .onAppear { seed() }
+        .onAppear {
+            seed()
+            SignupFunnel.view(client)
+        }
+        // signup_start on the first edit of any field. The values are compared with what the seed
+        // put there, so a prefilled form is not taken for a started one.
+        .onChange(of: fieldValues) {
+            guard !funnelStarted, let seededValues, fieldValues != seededValues else { return }
+            funnelStarted = true
+            SignupFunnel.start(client)
+        }
+    }
+
+    /// Every field's value, for the funnel's first-edit check. Never sent anywhere.
+    private var fieldValues: [String] {
+        [firstName, lastName, email, username, password, confirmPassword, registrationToken]
     }
 
     // MARK: - Pieces
@@ -169,6 +190,7 @@ public struct SignupRegistrationFormView: View {
     private func seed() {
         if seeded { return }
         seeded = true
+        defer { seededValues = fieldValues }
         guard let initialFormData else { return }
         firstName = initialFormData.firstName
         lastName = initialFormData.lastName
@@ -179,8 +201,11 @@ public struct SignupRegistrationFormView: View {
     }
 
     private func submit() {
+        funnelStarted = true
+        SignupFunnel.submit(client)
         guard password == confirmPassword else {
             validationMessage = mismatchMessage
+            SignupFunnel.error(client, category: "validation")
             return
         }
         validationMessage = ""

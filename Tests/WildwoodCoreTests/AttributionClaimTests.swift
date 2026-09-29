@@ -186,6 +186,55 @@ struct AttributionClaimTests {
         #expect(!body(backend, path: "/api/auth/register").contains("attribution"))
     }
 
+    // MARK: - Funnel session fields
+
+    private var sessionPayload: AttributionPayload {
+        AttributionPayload(
+            visitorKey: "visitor-key-0001",
+            firstTouch: touch,
+            lastTouch: touch,
+            platform: "ios",
+            sessionKey: "session-key-0001",
+            deviceClass: "tablet",
+            sessionCount: 3
+        )
+    }
+
+    @Test func registrationCarriesTheFunnelSessionFields() async throws {
+        let (service, _, backend) = makeService(payload: sessionPayload)
+        backend.stub("POST", "/api/auth/register", .init(json: sessionJSON))
+
+        _ = try await service.register(registrationRequest())
+
+        let sent = body(backend, path: "/api/auth/register")
+        #expect(sent.contains(#""sessionKey":"session-key-0001""#))
+        #expect(sent.contains(#""deviceClass":"tablet""#))
+        #expect(sent.contains(#""sessionCount":3"#))
+    }
+
+    @Test func aClaimCarriesTheFunnelSessionFields() async throws {
+        let (service, _, backend) = makeService(payload: sessionPayload)
+        backend.stub("POST", "/api/auth/login", .init(json: sessionJSON))
+        backend.stub("POST", "/api/attribution/claim", .init(json: #"{"recorded":true,"reason":null}"#))
+
+        _ = try await service.login(
+            LoginRequest(username: "", providerName: "Apple", providerToken: "id-token", appId: "app-1")
+        )
+
+        let sent = body(backend, path: "/api/attribution/claim")
+        #expect(sent.contains(#""sessionKey":"session-key-0001""#))
+        #expect(sent.contains(#""deviceClass":"tablet""#))
+        #expect(sent.contains(#""sessionCount":3"#))
+    }
+
+    @Test func aPayloadWithoutSessionFieldsLeavesThemOut() throws {
+        let json = String(decoding: try JSONEncoder().encode(capturedPayload), as: UTF8.self)
+
+        #expect(!json.contains("sessionKey"))
+        #expect(!json.contains("deviceClass"))
+        #expect(!json.contains("sessionCount"))
+    }
+
     // MARK: - Provider claim (A3)
 
     @Test func aProviderSignInClaimsTheTouchesOnceAndOnlyOnce() async throws {

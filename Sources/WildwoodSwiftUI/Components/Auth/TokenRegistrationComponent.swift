@@ -31,6 +31,8 @@ public struct TokenRegistrationComponent: View {
     @State private var errorMessage = ""
     @State private var successMessage = ""
     @State private var tokenValid: Bool?
+    /// Campaign Attribution funnel: signup_start goes out once, on the first edit.
+    @State private var funnelStarted = false
 
     public init(
         appId: String? = nil,
@@ -109,6 +111,14 @@ public struct TokenRegistrationComponent: View {
             if let prefilledToken, token.isEmpty {
                 token = prefilledToken
             }
+            SignupFunnel.view(client)
+        }
+        // signup_start on the first edit of a personal field (the token is often prefilled, so it
+        // does not count).
+        .onChange(of: [firstName, lastName, email, username, password, confirmPassword]) {
+            guard !funnelStarted else { return }
+            funnelStarted = true
+            SignupFunnel.start(client)
         }
     }
 
@@ -116,9 +126,12 @@ public struct TokenRegistrationComponent: View {
         guard let client = requireClient(client, component: "TokenRegistrationComponent") else { return }
         errorMessage = ""
         successMessage = ""
+        funnelStarted = true
+        SignupFunnel.submit(client)
 
         guard password == confirmPassword else {
             errorMessage = "Passwords do not match"
+            SignupFunnel.error(client, category: "validation")
             return
         }
 
@@ -128,6 +141,7 @@ public struct TokenRegistrationComponent: View {
         let isValid = await client.auth.validateRegistrationToken(token)
         tokenValid = isValid
         guard isValid else {
+            SignupFunnel.error(client, category: "invalid_token")
             errorMessage = "This registration token is not valid."
             onRegistrationError?("Invalid registration token")
             return
@@ -157,6 +171,7 @@ public struct TokenRegistrationComponent: View {
             }
         } catch {
             let message = (error as? WildwoodError)?.message ?? error.localizedDescription
+            SignupFunnel.error(client, error)
             errorMessage = message
             onRegistrationError?(message)
         }
