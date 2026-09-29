@@ -268,10 +268,18 @@ public final class AttributionService {
     /// Tracks a funnel event: a standard client event (`cta_click`, `plan_selected`...) or one of the
     /// app's configured custom names. Buffered until the config loads; dropped when funnel tracking is
     /// off, the name is not allowed, or it is a one-shot already sent this session. The label is
-    /// trimmed and capped at 100 characters. Never throws.
-    public func track(_ name: String, label: String? = nil, value: Double? = nil) {
+    /// trimmed and capped at 100 characters. `path` names the page the event belongs to (query and
+    /// fragment dropped, a leading `/` added), as `@wildwood/core`'s `track(name, { path })` does; nil
+    /// means the current screen. A `page_view` naming its page is a navigation, exactly like
+    /// ``trackScreen(_:)``. Never throws.
+    public func track(_ name: String, label: String? = nil, value: Double? = nil, path: String? = nil) {
         guard enabled else { return }
-        record(FunnelCall(name: name, label: label, value: value, at: clock(), path: currentPath))
+        let explicitPath = path.flatMap { AttributionRules.funnelPath($0) }
+        if name == "page_view", let explicitPath {
+            notifyPath(explicitPath)
+            return
+        }
+        record(FunnelCall(name: name, label: label, value: value, at: clock(), path: explicitPath ?? currentPath))
     }
 
     /// Tracks a `cta_click` with this label.

@@ -335,6 +335,25 @@ struct AttributionServiceTests {
         #expect(events.first?["clientTimestamp"] is String)
     }
 
+    @Test func anExplicitPathNamesTheEventsPage() async {
+        // @wildwood/core's track(name, { path }): the event carries the named page, and a page_view
+        // naming its page is a navigation that later events inherit.
+        let (service, _, backend) = makeServices()
+        stubFunnelConfig(backend)
+        await service.initialize()
+
+        service.trackScreen("home")
+        service.track("cta_click", label: "hero", path: "pricing?plan=pro#top")
+        service.track("cta_click", label: "footer")
+        service.track("page_view", path: "/checkout")
+        service.track("cta_click", label: "pay")
+        await service.flush()
+
+        let events = sentEvents(backend)
+        #expect(events.map { $0["name"] as? String } == ["page_view", "cta_click", "cta_click", "page_view", "cta_click"])
+        #expect(events.map { $0["path"] as? String } == ["/home", "/pricing", "/home", "/checkout", "/checkout"])
+    }
+
     @Test func theEventsRequestCarriesTheVisitorAndSession() async throws {
         let (service, _, backend) = makeServices()
         stubFunnelConfig(backend)
