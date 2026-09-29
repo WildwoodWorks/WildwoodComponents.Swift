@@ -85,6 +85,9 @@ private struct AuthFlowView: View {
     let allowRegistration: Bool?
     let onRegisterClick: (() -> Void)?
     @Environment(\.webAuthenticationSession) private var webAuthenticationSession
+    @Environment(\.wildwoodClient) private var client
+    /// Campaign Attribution funnel: signup_start goes out once, on the first edit.
+    @State private var registerFunnelStarted = false
 
     /// The component override applied over the model's configuration gate. Read
     /// during render so the register view collapses without a state write.
@@ -332,6 +335,17 @@ private struct AuthFlowView: View {
 
             Button("Already have an account? Sign in") { model.toggleMode() }
                 .font(.footnote)
+        }
+        // Campaign Attribution funnel: signup_view when the register view shows, signup_start on the
+        // first edit (repeats are dropped by the one-shot rule in WildwoodCore).
+        .onAppear { SignupFunnel.view(client) }
+        .onChange(of: [
+            model.regFirstName, model.regLastName, model.regEmail,
+            model.regUsername, model.regPassword, model.regConfirmPassword,
+        ]) {
+            guard !registerFunnelStarted else { return }
+            registerFunnelStarted = true
+            SignupFunnel.start(client)
         }
     }
 

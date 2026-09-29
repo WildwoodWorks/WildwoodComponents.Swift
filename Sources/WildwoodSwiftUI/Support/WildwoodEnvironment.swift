@@ -53,6 +53,28 @@ public extension View {
             }
         }
     }
+
+    /// Record a Campaign Attribution funnel `page_view` for this screen, as `/<name>`, each time it
+    /// appears. A native app has no URL for the funnel to read, so screens say where the visitor is.
+    /// The same screen twice in a row counts once, and nothing is sent while the app has funnel
+    /// tracking off. Apply it inside the `.wildwoodClient(_:)` subtree (it reads the client from the
+    /// environment); outside one it does nothing.
+    func wildwoodTrackScreen(_ name: String) -> some View {
+        modifier(WildwoodTrackScreenModifier(name: name))
+    }
+}
+
+/// `.wildwoodTrackScreen(_:)`: a `page_view` on every appearance (a tab or a stack pop coming back
+/// to the screen counts again, unless it was already the current screen).
+private struct WildwoodTrackScreenModifier: ViewModifier {
+    let name: String
+    @Environment(\.wildwoodClient) private var client
+
+    func body(content: Content) -> some View {
+        content.onAppear {
+            client?.attribution.trackScreen(name)
+        }
+    }
 }
 
 /// The SwiftUI twin of WildwoodProvider's `resolveTheme(theme ?? serviceTheme)`.

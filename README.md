@@ -549,6 +549,63 @@ Touches are persisted only after the app's consent category (Analytics by defaul
 `ConsentService` decisions re-apply that gate on their own. Set
 `WildwoodConfig(attributionEnabled: false)` to turn the whole engine off.
 
+### Funnel tracking
+
+With funnel tracking on for the App (WildwoodAdmin, Components, then Campaign Attribution), the SDK
+also records what a visitor does between landing and signing up, so the Campaign Attribution report
+can show where each campaign's visitors drop off. Nothing is sent until the App's config says so.
+Events go to the anonymous `POST /api/attribution/events` endpoint in batches of at most 25: five
+seconds after the first event is queued, and whenever the app goes to the background. A session ends
+after 30 minutes without activity, and each registration carries the session key, the device class
+(`mobile` on a phone, `tablet` on an iPad) and the visitor's session count, which joins the new
+account to its funnel. The session is stored alongside the touches, under the same consent gate.
+
+A native app has no URL for the funnel to read, so screens say where the visitor is:
+
+```swift
+PricingView()
+    .wildwoodTrackScreen("pricing")   // a page_view with path "/pricing" each time it appears
+```
+
+Track anything else from code. Calls made before the config loads are buffered and replayed, a name
+the App does not allow is dropped, and nothing ever throws:
+
+```swift
+client.attribution.track("demo_booked", label: "pricing_page", value: 1) // a configured custom name
+client.attribution.trackCta("nav_pricing")                                // a cta_click with this label
+client.attribution.trackScreen("pricing")                                 // what .wildwoodTrackScreen calls
+await client.attribution.flush()                                          // send the queue now
+```
+
+Labels are trimmed and capped at 100 characters. `signup_complete`, `trial_started` and `purchase`
+are recorded by the server when they happen, so a client call with one of those names is dropped.
+Scroll depth, engagement and automatic CTA clicks are web-only: there is no page to scroll here.
+
+The registration views report the signup steps on their own (`RegistrationSubscriptionSignupView`,
+`SignupRegistrationFormView`, `AuthenticationComponent`'s register view, `TokenRegistrationComponent`
+and the deprecated `SignupWithSubscriptionComponent`):
+
+| Event | When | Label |
+| --- | --- | --- |
+| `signup_view` | The registration form appears. | none |
+| `signup_start` | The first edit of a registration field (or the submit, for an autofilled form). | none |
+| `signup_submit` | The account form is submitted, before the request goes out. | none |
+| `signup_error` | A client check or the server refuses the registration. | a category |
+| `plan_selected` | A plan is chosen. | the tier id |
+| `checkout_start` | The payment step opens for a paid plan. | the pricing option id (else the tier id) |
+
+The first four need the App's "Track signup steps" switch. `signup_error` carries a category, never
+what the visitor typed or the server's message: `validation`, `email_taken`, `username_taken`,
+`password_policy`, `captcha`, `invalid_token`, `registration_closed`, `rate_limited`, `network`,
+`server` or `unknown`, from the server's `errorCode` and then the HTTP status. A custom form can map
+its own errors with `SignupFunnelRules.errorCategory(for:)`. The view, start, submit, plan and
+checkout events go out once per session (per plan for the last two).
+
+Conversions can also be sent to the ad platforms from the server, so a campaign is credited even when
+a pixel is blocked. Configure them in WildwoodAdmin under Campaign Attribution, then Conversion
+destinations. No SDK code is needed: the registration payload already carries the click id the
+server uses.
+
 ## Test suite
 
 `WildwoodComponentsTestSuite.iOS/` is an XcodeGen-defined iOS app with one test screen per

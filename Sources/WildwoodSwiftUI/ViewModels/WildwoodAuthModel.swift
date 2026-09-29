@@ -259,8 +259,10 @@ public final class WildwoodAuthModel {
 
     public func handleRegister() async {
         clearMessages()
+        SignupFunnel.submit(client)
         guard regPassword == regConfirmPassword else {
             errorMessage = "Passwords do not match"
+            SignupFunnel.error(client, category: "validation")
             return
         }
         isLoading = true
@@ -284,6 +286,7 @@ public final class WildwoodAuthModel {
             )
             processAuthResponse(response)
         } catch {
+            SignupFunnel.error(client, error)
             handleError(error)
         }
     }

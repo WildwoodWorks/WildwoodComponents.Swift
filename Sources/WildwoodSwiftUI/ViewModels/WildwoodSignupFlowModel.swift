@@ -355,6 +355,7 @@ public final class WildwoodSignupFlowModel {
         let pricing: AppTierPricingModel? = Catalog.resolvePriceOption(tier, billing: billing)
         let resolved = ResolvedSignupPlan(tier: tier, pricing: pricing)
         chosenPlan = resolved
+        SignupFunnel.planSelected(client, tierId: tier.id, tierName: tier.name)
         dispatch(
             .planChosen(
                 tierId: tier.id,
@@ -601,7 +602,13 @@ public final class WildwoodSignupFlowModel {
     private func apply(_ event: SignupEvent) -> Bool {
         let transition: SignupTransitionResult = SignupMachine.transition(state, event, issuer: issuer)
         guard transition.applied else { return false }
+        let previousStep: SignupStep = state.step
         state = transition.state
+        if state.step == .payment && previousStep != .payment,
+           let chosen: ResolvedSignupPlan = plan, Self.requiresPayment(chosen) {
+            // Campaign Attribution funnel: the payment step opened for a paid plan.
+            SignupFunnel.checkoutStart(client, pricingId: chosen.pricing?.id, tierId: chosen.tier.id)
+        }
         notify()
         return true
     }
@@ -716,6 +723,7 @@ public final class WildwoodSignupFlowModel {
             let message: String = SignupPlanRules.nonBlank(details.errorMessage)
                 ?? RegistrationSubscriptionDriverMessages.tokenRejected
             report(RegistrationSubscriptionErrorCodes.registrationTokenRejected, message)
+            SignupFunnel.error(client, code: RegistrationSubscriptionErrorCodes.registrationTokenRejected)
             tokenMessage = message
             return apply(.tokenRejected(token: token, message: message))
         }
@@ -762,6 +770,7 @@ public final class WildwoodSignupFlowModel {
                 let message: String = refusal.errorMessage ?? RegistrationSubscriptionDriverMessages.signupFailed
                 let code: String = refusal.errorCode ?? RegistrationSubscriptionErrorCodes.signupFailed
                 report(code, message)
+                SignupFunnel.error(client, code: code)
                 apply(.accountFailed(token: token, message: message))
                 return
             }
@@ -797,6 +806,7 @@ public final class WildwoodSignupFlowModel {
         } catch {
             let failure: RegistrationSubscriptionError = Self.toFailure(error)
             report(failure.code, failure.message)
+            SignupFunnel.error(client, error)
             apply(.accountFailed(token: token, message: failure.message))
         }
     }

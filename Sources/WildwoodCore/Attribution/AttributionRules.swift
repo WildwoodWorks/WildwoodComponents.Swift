@@ -3,6 +3,9 @@
 // query string); the server re-normalizes and never trusts these values. Keep the ports in step.
 
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum AttributionRules {
     static let sourceMediumMaxLength = 100
@@ -215,6 +218,234 @@ enum AttributionRules {
                 .prefix(maxExtraParamNames)
         )
         result.beaconEnabled = config.isEnabled && config.beaconEnabled
+        result.funnelTrackingEnabled = config.isEnabled && config.funnelTrackingEnabled
+        result.customEventNames = normalizeCustomEventNames(config.customEventNames)
         return result
+    }
+
+    // MARK: - Funnel events (mirrors @wildwood/core types.ts, funnelTracker.ts and signupFunnel.ts)
+
+    /// Inactivity after which a funnel session ends and the next event starts a new one.
+    static let sessionTimeout: TimeInterval = 30 * 60
+    /// Seconds between timed flushes while events are queued.
+    static let flushIntervalSeconds: Int = 5
+    /// Most events one POST api/attribution/events request may carry.
+    static let maxEventsPerRequest = 25
+    /// Calls buffered while the config loads; later ones are dropped.
+    static let maxPendingBeforeConfig = 50
+    /// Events held for sending; later ones are dropped until a flush drains the queue.
+    static let maxQueuedEvents = 200
+    static let funnelLabelMaxLength = 100
+    static let maxCustomEventNames = 50
+    static let scrollMilestones: [Double] = [25, 50, 75, 100]
+    static let maxTimeOnPageSeconds: Double = 86_400
+    /// Keeps a request body well under the server's 32 KB cap.
+    static let maxBodyBytes = 30_000
+
+    /// Funnel events a client may send. Configured custom names are allowed on top of these.
+    static let funnelClientEvents: Set<String> = [
+        "page_view", "engaged", "scroll_depth", "time_on_page", "cta_click",
+        "signup_view", "signup_start", "signup_submit", "signup_error", "plan_selected", "checkout_start",
+    ]
+    /// Funnel events only the server records. A client request carrying one is refused, so they are dropped.
+    static let funnelServerOnlyEvents: Set<String> = ["signup_complete", "trial_started", "purchase"]
+    /// Sent at most once per session per label (the server dedups these too).
+    static let oneShotPerLabelEvents: Set<String> = [
+        "signup_view", "signup_start", "signup_submit", "plan_selected", "checkout_start",
+    ]
+    /// The steps the app's "Track signup steps" switch gates.
+    static let signupStepEvents: Set<String> = ["signup_view", "signup_start", "signup_submit", "signup_error"]
+
+    /// Whether the value has the shape of a funnel event name (`^[a-z0-9_]{1,40}$`).
+    static func isFunnelEventName(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        return (1...40).contains(bytes.count)
+            && bytes.allSatisfy { ($0 >= 97 && $0 <= 122) || ($0 >= 48 && $0 <= 57) || $0 == 95 }
+    }
+
+    /// A config's custom names: trimmed, lowercased, well formed, not a standard or server-only name,
+    /// deduplicated, and at most ``maxCustomEventNames``.
+    static func normalizeCustomEventNames(_ names: [String]) -> [String] {
+        var kept: [String] = []
+        for raw in names {
+            let name = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard isFunnelEventName(name), !funnelClientEvents.contains(name),
+                  !funnelServerOnlyEvents.contains(name), !kept.contains(name)
+            else { continue }
+            kept.append(name)
+            if kept.count >= maxCustomEventNames { break }
+        }
+        return kept
+    }
+
+    /// A caller-supplied page or screen path: no query or fragment, a leading "/", capped. Nil when empty.
+    static func funnelPath(_ raw: String) -> String? {
+        let cut = raw.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map(String.init) ?? ""
+        let beforeFragment = cut.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first
+            .map(String.init) ?? ""
+        let trimmed = beforeFragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        let path = trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
+        return truncate(path, maxUTF16: pathMaxLength)
+    }
+
+    /// A signup_error label reduced to the server's category shape (`^[a-z0-9_]{1,40}$`), `unknown`
+    /// when nothing is left.
+    static func signupErrorLabel(_ label: String?) -> String {
+        var category = ""
+        var lastWasSeparator = false
+        for byte in (label ?? "").lowercased().utf8 {
+            let keep = (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 95
+            if keep {
+                category.append(Character(UnicodeScalar(byte)))
+                lastWasSeparator = false
+            } else if !lastWasSeparator {
+                category.append("_")
+                lastWasSeparator = true
+            }
+        }
+        category = trimUnderscores(category)
+        if category.count > 40 { category = String(category.prefix(40)) }
+        while category.hasSuffix("_") { category.removeLast() }
+        return category.isEmpty ? "unknown" : category
+    }
+
+    private static func trimUnderscores(_ value: String) -> String {
+        var result = Substring(value)
+        while result.hasPrefix("_") { result = result.dropFirst() }
+        while result.hasSuffix("_") { result = result.dropLast() }
+        return String(result)
+    }
+
+    // MARK: - Device class
+
+    #if canImport(UIKit)
+    /// A phone reports `mobile`, an iPad `tablet`, and an iPad app running on a Mac `desktop`.
+    static func deviceClass(for idiom: UIUserInterfaceIdiom) -> String {
+        switch idiom {
+        case .pad:
+            return "tablet"
+        case .mac:
+            return "desktop"
+        default:
+            return "mobile"
+        }
+    }
+
+    @MainActor
+    static func currentDeviceClass() -> String {
+        deviceClass(for: UIDevice.current.userInterfaceIdiom)
+    }
+    #else
+    @MainActor
+    static func currentDeviceClass() -> String {
+        "desktop"
+    }
+    #endif
+}
+
+/// The registration funnel's shared rules: the `signup_error` categories and the plan keys the
+/// `plan_selected` / `checkout_start` labels carry. A port of `signupFunnel.ts` in `@wildwood/react-shared`
+/// (and `AttributionRules` in the .NET SDK). A category comes from an error CODE or HTTP status, never
+/// from a message, so a label never carries what the visitor typed or what the server said.
+public enum SignupFunnelRules {
+    /// Every category a `signup_error` label is drawn from.
+    public static let errorCategories: [String] = [
+        "validation", "email_taken", "username_taken", "password_policy", "captcha", "invalid_token",
+        "registration_closed", "rate_limited", "network", "server", "unknown",
+    ]
+
+    /// Codes compared with case and separators removed (`USERNAME_EXISTS` and `UsernameExists` match).
+    private static let codeCategories: [String: String] = [
+        "USERNAMEEXISTS": "username_taken",
+        "USERNAMETAKEN": "username_taken",
+        "USEREXISTS": "email_taken",
+        "EMAILEXISTS": "email_taken",
+        "EMAILTAKEN": "email_taken",
+        "DUPLICATEEMAIL": "email_taken",
+        "PASSWORDINVALID": "password_policy",
+        "PASSWORDPOLICY": "password_policy",
+        "INVALIDTOKEN": "invalid_token",
+        "REGISTRATIONTOKENREJECTED": "invalid_token",
+        "VALIDATIONERROR": "validation",
+        "VALIDATION": "validation",
+        "EMAILREQUIRED": "validation",
+        "USERNAMEREQUIRED": "validation",
+        "REGISTRATIONNOTALLOWED": "registration_closed",
+        "FORBIDDEN": "registration_closed",
+        "RATELIMITED": "rate_limited",
+        "RATELIMITEXCEEDED": "rate_limited",
+        "NETWORKERROR": "network",
+        "TIMEOUT": "network",
+        "SERVERERROR": "server",
+        "INTERNALERROR": "server",
+        "DATABASEERROR": "server",
+        "EXECUTIONSTRATEGYERROR": "server",
+        "USERCREATIONFAILED": "server",
+    ]
+
+    /// The category for a server or client error code (WildwoodAPI's `errorCode`, a
+    /// ``WildwoodError/Code`` raw value, or a flow code such as `registration_token_rejected`), falling
+    /// back on the HTTP status (0 for a request that never reached the server). Unrecognized is `unknown`.
+    public static func errorCategory(code: String?, status: Int? = nil) -> String {
+        var key = ""
+        for scalar in (code ?? "").uppercased().unicodeScalars
+        where (scalar.value >= 65 && scalar.value <= 90) || (scalar.value >= 48 && scalar.value <= 57) {
+            key.unicodeScalars.append(scalar)
+        }
+        if !key.isEmpty {
+            if let known = codeCategories[key] { return known }
+            if key.contains("CAPTCHA") { return "captcha" }
+            if key.hasPrefix("TOKEN") { return "invalid_token" }
+            if key.hasPrefix("PASSWORD") { return "password_policy" }
+            if key.contains("REGISTRATIONDISABLED") || key.contains("NOTALLOWED") { return "registration_closed" }
+        }
+        if let status {
+            if status == 0 { return "network" }
+            if status == 429 { return "rate_limited" }
+            if status >= 500 { return "server" }
+            if status == 400 || status == 422 { return "validation" }
+        }
+        return "unknown"
+    }
+
+    /// The category for anything a registration can throw: a ``WildwoodError`` (the server's own
+    /// `errorCode` from the response body first, then the client's code and status) or a transport
+    /// failure (`URLError`). Messages are never read.
+    public static func errorCategory(for error: any Error) -> String {
+        if let wildwood = error as? WildwoodError {
+            if let body = wildwood.details,
+               let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+               let serverCode = object["errorCode"] as? String, !serverCode.isEmpty {
+                let fromServer = errorCategory(code: serverCode)
+                if fromServer != "unknown" { return fromServer }
+            }
+            return errorCategory(code: wildwood.code.rawValue, status: wildwood.status)
+        }
+        if error is URLError { return "network" }
+        return "unknown"
+    }
+
+    /// A stable plan key for `plan_selected` / `checkout_start`: the tier's (or pricing option's) id,
+    /// else a slug of its name, capped at 100 characters. Nil when there is neither.
+    public static func planKey(id: String?, name: String? = nil) -> String? {
+        let trimmed = (id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return String(trimmed.prefix(100)) }
+        var slug = ""
+        var lastWasSeparator = false
+        for byte in (name ?? "").lowercased().utf8 {
+            if (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) {
+                slug.append(Character(UnicodeScalar(byte)))
+                lastWasSeparator = false
+            } else if !lastWasSeparator {
+                slug.append("_")
+                lastWasSeparator = true
+            }
+        }
+        while slug.hasPrefix("_") { slug.removeFirst() }
+        while slug.hasSuffix("_") { slug.removeLast() }
+        if slug.count > 100 { slug = String(slug.prefix(100)) }
+        return slug.isEmpty ? nil : slug
     }
 }

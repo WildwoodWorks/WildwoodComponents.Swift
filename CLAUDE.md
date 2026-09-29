@@ -37,7 +37,13 @@ WildwoodTestIDs     ← accessibility-identifier vocabulary (Foundation only, no
   concurrency: `WildwoodHttpClient` and `TokenRefreshCoordinator` are actors;
   `SessionManager`/`NotificationService`/`ThemeService`/`AttributionService`/`FeatureStore`/
   `PublicCatalogStore`/`WildwoodEventEmitter`/`WildwoodClient` are `@MainActor @Observable`;
-  request/response services are stateless `Sendable` classes.
+  request/response services are stateless `Sendable` classes. `AttributionService` also carries
+  the funnel tracker (native half of the JS `FunnelTracker`): `track`/`trackCta`/`trackScreen`/
+  `flush`, a 30-minute session persisted in the `ww_attribution` blob only where consent allows,
+  batches of at most 25 to `api/attribution/events`, a timed flush plus a flush on
+  `didEnterBackgroundNotification`. The gating rules live in `AttributionRules` and the public
+  `SignupFunnelRules` (signup_error categories, plan keys); SwiftUI reports the signup steps through
+  the internal `SignupFunnel` helper and exposes `.wildwoodTrackScreen(_:)`.
 - **Components**: 46 `.swift` files under `Sources/WildwoodSwiftUI/Components/` (the Sync count
   rule — support types such as `TierCard`, `UsageMath` and `StorePurchaseSettlement` included).
   `RegistrationAndSubscriptionComponent` (September 2026) is the shell over
