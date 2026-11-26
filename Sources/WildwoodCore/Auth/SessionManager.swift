@@ -58,6 +58,14 @@ public final class SessionManager {
 
     public var user: AuthenticationResponse? { currentUser }
 
+    /// The app requires two-factor authentication and the signed-in user has not set it up, so
+    /// the session's tokens are restricted: the API refuses everything except two-factor
+    /// enrollment, the auth endpoints and disclaimer acceptance. Set from the auth response's
+    /// `requiresTwoFactorEnrollment`, the token's `tfa_enroll_pending` claim, or a 403
+    /// `TWO_FACTOR_ENROLLMENT_REQUIRED` from any call. Route the user to two-factor setup, then
+    /// call ``refreshAfterTwoFactorEnrollment()`` to lift it.
+    public private(set) var requiresTwoFactorEnrollment = false
+
     public init(
         config: WildwoodConfig,
         authService: AuthService,
@@ -111,6 +119,7 @@ public final class SessionManager {
         // Restore auth data.
         if let storedAuth = authService.getStoredUser(), !storedAuth.jwtToken.isEmpty {
             currentUser = storedAuth
+            updateTwoFactorEnrollmentState(from: storedAuth)
 
             if sessionExpiry == nil {
                 extendSession()
@@ -133,6 +142,7 @@ public final class SessionManager {
 
         currentUser = authResponse
         sessionExpiry = now().addingTimeInterval(TimeInterval(config.sessionExpirationMinutes) * 60)
+        updateTwoFactorEnrollmentState(from: authResponse)
 
         persistAuthData(authResponse)
         persistSessionExpiry()
@@ -169,6 +179,35 @@ public final class SessionManager {
         refreshInProgress = task
         defer { refreshInProgress = nil }
         return await task.value
+    }
+
+    /// Lift the two-factor enrollment restriction after the user has enrolled: exchanges the
+    /// refresh token for an unrestricted one. Unlike ``refreshToken()`` this never short-circuits
+    /// on a recent refresh — the restricted token may be seconds old.
+    ///
+    /// - Returns: true when the session is now unrestricted; false when the refresh failed or the
+    ///   server still reports enrollment pending (the user has not finished enrolling).
+    @discardableResult
+    public func refreshAfterTwoFactorEnrollment() async -> Bool {
+        guard currentUser?.jwtToken.isEmpty == false else { return false }
+
+        // Let an in-flight refresh land first so the two do not race on the refresh token.
+        if let refreshInProgress {
+            _ = await refreshInProgress.value
+        }
+
+        let refreshed = await authService.refreshToken()
+        guard refreshed else { return false }
+        lastRefreshTime = now()
+
+        // AuthService stores the new response synchronously but notifies us through a hop to the
+        // main actor; apply it now so the answer reflects the new token. The queued callback
+        // re-applies the same response.
+        if let stored = authService.getStoredUser(), !stored.jwtToken.isEmpty {
+            currentUser = stored
+            updateTwoFactorEnrollmentState(from: stored)
+        }
+        return !requiresTwoFactorEnrollment
     }
 
     public func onAppResumed() async {
@@ -211,6 +250,9 @@ public final class SessionManager {
         }
         await http.setOn401Refresh { [weak self] in
             await self?.refreshToken() ?? false
+        }
+        await http.setOnTwoFactorEnrollmentRequired { [weak self] in
+            await self?.markTwoFactorEnrollmentRequired()
         }
     }
 
@@ -279,6 +321,28 @@ public final class SessionManager {
         return refreshed
     }
 
+    /// Reflect the session's restriction from an auth response or its token, announcing it when
+    /// it first appears.
+    private func updateTwoFactorEnrollmentState(from response: AuthenticationResponse) {
+        let pending = response.requiresTwoFactorEnrollment
+            || JWTDecoder.isTwoFactorEnrollmentPending(response.jwtToken)
+        setTwoFactorEnrollmentRequired(pending)
+    }
+
+    /// The API refused a call with `TWO_FACTOR_ENROLLMENT_REQUIRED`.
+    func markTwoFactorEnrollmentRequired() {
+        guard currentUser != nil else { return }
+        setTwoFactorEnrollmentRequired(true)
+    }
+
+    private func setTwoFactorEnrollmentRequired(_ pending: Bool) {
+        let wasPending = requiresTwoFactorEnrollment
+        requiresTwoFactorEnrollment = pending
+        if pending, !wasPending {
+            events.emit(.twoFactorEnrollmentRequired)
+        }
+    }
+
     private func isSessionExpired() -> Bool {
         guard let sessionExpiry else { return false }
         return now() > sessionExpiry
@@ -306,6 +370,7 @@ public final class SessionManager {
     private func clearSessionStorage() {
         currentUser = nil
         sessionExpiry = nil
+        requiresTwoFactorEnrollment = false
         storage.removeItem(WildwoodStorageKeys.sessionAuth)
         storage.removeItem(WildwoodStorageKeys.sessionExpiry)
     }
@@ -316,6 +381,7 @@ public final class SessionManager {
         guard !authResponse.jwtToken.isEmpty else { return }
 
         currentUser = authResponse
+        updateTwoFactorEnrollmentState(from: authResponse)
 
         if config.slidingExpiration {
             extendSession()
@@ -334,5 +400,6 @@ public final class SessionManager {
         stopRefreshTimer()
         currentUser = nil
         sessionExpiry = nil
+        requiresTwoFactorEnrollment = false
     }
 }

@@ -12,6 +12,11 @@ public enum WildwoodEvent: Sendable {
     case sessionInitialized(Bool)
     case sessionExpired
     case tokenRefreshed(String)
+    /// The signed-in session is restricted until the user enrolls in two-factor authentication:
+    /// the auth response said so, or an API call was refused with `TWO_FACTOR_ENROLLMENT_REQUIRED`.
+    /// Route the user to two-factor setup, then call
+    /// ``SessionManager/refreshAfterTwoFactorEnrollment()``.
+    case twoFactorEnrollmentRequired
     case themeChanged(String)
     /// An entitlement mutation landed (tier change, cancel, add-on, override …): re-read the
     /// subscription and the feature map. A SIGNAL to refresh, not proof the change has

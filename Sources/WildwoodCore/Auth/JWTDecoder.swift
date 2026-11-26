@@ -13,6 +13,9 @@ public struct JWTPayload: Sendable {
     public var appId: String?
     public var exp: TimeInterval?
     public var iat: TimeInterval?
+    /// `tfa_enroll_pending`: a restricted token issued because the app requires two-factor
+    /// authentication and the user has not enrolled.
+    public var twoFactorEnrollmentPending: Bool = false
 }
 
 public enum JWTDecoder {
@@ -47,8 +50,21 @@ public enum JWTDecoder {
             companyId: object["company_id"] as? String,
             appId: object["app_id"] as? String,
             exp: (object["exp"] as? NSNumber)?.doubleValue,
-            iat: (object["iat"] as? NSNumber)?.doubleValue
+            iat: (object["iat"] as? NSNumber)?.doubleValue,
+            twoFactorEnrollmentPending: isTrue(object["tfa_enroll_pending"])
         )
+    }
+
+    /// True when the token carries the "two-factor enrollment pending" restriction.
+    public static func isTwoFactorEnrollmentPending(_ token: String) -> Bool {
+        decodePayload(token)?.twoFactorEnrollmentPending ?? false
+    }
+
+    /// Claims arrive as the string "true" from the .NET token handler; accept a JSON bool too.
+    private static func isTrue(_ value: Any?) -> Bool {
+        if let string = value as? String { return string.lowercased() == "true" }
+        if let number = value as? NSNumber { return number.boolValue }
+        return false
     }
 
     /// Expiration date of the token, or nil when it has no `exp`.

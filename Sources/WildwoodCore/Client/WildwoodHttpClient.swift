@@ -25,6 +25,7 @@ public actor WildwoodHttpClient {
     private let urlSession: URLSession
     private var tokenProvider: (@Sendable () async -> String?)?
     private var on401Refresh: (@Sendable () async -> Bool)?
+    private var onTwoFactorEnrollmentRequired: (@Sendable () async -> Void)?
 
     public init(config: WildwoodConfig, urlSession: URLSession = .shared) {
         self.config = config
@@ -39,6 +40,13 @@ public actor WildwoodHttpClient {
     /// Set the function that handles 401 retry (refreshes token, returns true if refreshed).
     public func setOn401Refresh(_ handler: @escaping @Sendable () async -> Bool) {
         on401Refresh = handler
+    }
+
+    /// Set the function told when an authenticated call is refused because the session is
+    /// restricted until the user enrolls in two-factor authentication (403
+    /// `TWO_FACTOR_ENROLLMENT_REQUIRED`). The error is still thrown to the caller.
+    public func setOnTwoFactorEnrollmentRequired(_ handler: @escaping @Sendable () async -> Void) {
+        onTwoFactorEnrollmentRequired = handler
     }
 
     // MARK: - Verb methods (endpoint paths must be string literals — see header)
@@ -158,11 +166,13 @@ public actor WildwoodHttpClient {
                 } catch {
                     // Body read failed — report the status alone.
                 }
-                throw WildwoodError.fromResponse(
+                let error = WildwoodError.fromResponse(
                     status: http.statusCode,
                     body: errorBody.isEmpty ? nil : errorBody,
                     fallbackMessage: HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
                 )
+                await reportIfEnrollmentRequired(error, skipAuth: skipAuth)
+                throw error
             }
 
             let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? ""
@@ -358,11 +368,13 @@ public actor WildwoodHttpClient {
         }
 
         guard (200..<300).contains(http.statusCode) else {
-            throw WildwoodError.fromResponse(
+            let error = WildwoodError.fromResponse(
                 status: http.statusCode,
                 body: data.isEmpty ? nil : data,
                 fallbackMessage: HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
             )
+            await reportIfEnrollmentRequired(error, skipAuth: skipAuth)
+            throw error
         }
 
         return data
@@ -408,6 +420,14 @@ public actor WildwoodHttpClient {
     private func shouldRefreshAndReplayAfter401(status: Int, skipAuth: Bool) async -> Bool {
         guard status == 401, !skipAuth, let on401Refresh else { return false }
         return await on401Refresh()
+    }
+
+    /// Tells the session that the token is restricted pending two-factor enrollment. Only for
+    /// authenticated calls: an anonymous call cannot carry the restriction.
+    private func reportIfEnrollmentRequired(_ error: WildwoodError, skipAuth: Bool) async {
+        guard !skipAuth, error.status == 403, error.code == .twoFactorEnrollmentRequired,
+              let onTwoFactorEnrollmentRequired else { return }
+        await onTwoFactorEnrollmentRequired()
     }
 
     /// Transport-error mapping shared by every URLSession call site: task
