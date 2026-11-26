@@ -65,6 +65,73 @@ struct AuthModelTests {
         #expect(model.errorMessage == "Passwords do not match")
     }
 
+    // MARK: - Required two-factor enrollment
+
+    private func makeModel(backend: TestBackend, onSuccess: ((AuthenticationResponse) -> Void)? = nil) -> (WildwoodAuthModel, WildwoodClient) {
+        let client = WildwoodClient(
+            config: WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false, storage: .memory),
+            urlSession: backend.makeSession()
+        )
+        return (WildwoodAuthModel(client: client, appId: "app-1", onAuthenticationSuccess: onSuccess), client)
+    }
+
+    @Test func enrollmentRequiredHoldsTheUserOnSetup() {
+        var succeeded: AuthenticationResponse?
+        let client = WildwoodClient(
+            config: WildwoodConfig(baseUrl: "https://unit.test", appId: "app-1", storage: .memory)
+        )
+        let model = WildwoodAuthModel(client: client, appId: "app-1", onAuthenticationSuccess: { succeeded = $0 })
+
+        model.processAuthResponse(
+            AuthenticationResponse(userId: "u1", jwtToken: "jwt", refreshToken: "r", requiresTwoFactorEnrollment: true)
+        )
+
+        #expect(model.view == .twoFactorEnrollment)
+        #expect(model.resolveTitle() == "Set Up Two-Factor Authentication")
+        // Signed in (enrollment calls need the token) but restricted, and not reported as success.
+        #expect(client.session.accessToken == "jwt")
+        #expect(client.session.requiresTwoFactorEnrollment)
+        #expect(succeeded == nil)
+    }
+
+    @Test func completingEnrollmentRefreshesAndReportsSuccess() async {
+        let backend = TestBackend()
+        var succeeded: AuthenticationResponse?
+        let (model, client) = makeModel(backend: backend) { succeeded = $0 }
+        client.storage.setItem(WildwoodStorageKeys.refreshToken, "r1")
+        model.processAuthResponse(
+            AuthenticationResponse(userId: "u1", jwtToken: "restricted", refreshToken: "r1", requiresTwoFactorEnrollment: true)
+        )
+        backend.stub("POST", "/api/auth/refresh-token", TestStubResponse(json: """
+        {"userId":"u1","jwtToken":"unrestricted","refreshToken":"r2","requiresTwoFactorEnrollment":false}
+        """))
+
+        await model.handleTwoFactorEnrollmentCompleted()
+
+        #expect(model.view == .login)
+        #expect(succeeded?.jwtToken == "unrestricted")
+        #expect(!client.session.requiresTwoFactorEnrollment)
+    }
+
+    @Test func completingBeforeEnrollingKeepsTheUserOnSetup() async {
+        let backend = TestBackend()
+        var succeeded: AuthenticationResponse?
+        let (model, client) = makeModel(backend: backend) { succeeded = $0 }
+        client.storage.setItem(WildwoodStorageKeys.refreshToken, "r1")
+        model.processAuthResponse(
+            AuthenticationResponse(userId: "u1", jwtToken: "restricted", refreshToken: "r1", requiresTwoFactorEnrollment: true)
+        )
+        backend.stub("POST", "/api/auth/refresh-token", TestStubResponse(json: """
+        {"userId":"u1","jwtToken":"still-restricted","refreshToken":"r2","requiresTwoFactorEnrollment":true}
+        """))
+
+        await model.handleTwoFactorEnrollmentCompleted()
+
+        #expect(model.view == .twoFactorEnrollment)
+        #expect(!model.errorMessage.isEmpty)
+        #expect(succeeded == nil)
+    }
+
     // The registration gate can collapse .register to .login during render, so the
     // component titles the view it actually shows rather than the model's own.
     @Test func resolveTitleForAViewIgnoresTheInternalView() {

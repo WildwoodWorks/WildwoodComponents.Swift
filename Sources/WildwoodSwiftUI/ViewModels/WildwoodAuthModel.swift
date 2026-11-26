@@ -7,6 +7,9 @@ import WildwoodCore
 
 public enum AuthView: Sendable, Equatable {
     case login, register, twoFactor, passwordReset, forgotPassword, disclaimers
+    /// The app requires two-factor authentication and the user has not set it up: the session is
+    /// signed in with restricted tokens until they enroll.
+    case twoFactorEnrollment
 }
 
 @MainActor
@@ -138,6 +141,7 @@ public final class WildwoodAuthModel {
         case .passwordReset: return "Reset Password"
         case .forgotPassword: return "Forgot Password"
         case .disclaimers: return "Accept Disclaimers"
+        case .twoFactorEnrollment: return "Set Up Two-Factor Authentication"
         }
     }
 
@@ -226,7 +230,56 @@ public final class WildwoodAuthModel {
             return
         }
 
+        if Self.needsTwoFactorEnrollment(response) {
+            beginTwoFactorEnrollment(response)
+            return
+        }
+
         completeAuth(response)
+    }
+
+    // MARK: - Required two-factor enrollment
+
+    private static func needsTwoFactorEnrollment(_ response: AuthenticationResponse) -> Bool {
+        response.requiresTwoFactorEnrollment || JWTDecoder.isTwoFactorEnrollmentPending(response.jwtToken)
+    }
+
+    /// Sign in with the restricted tokens (enrollment calls need them) and hold the user on
+    /// two-factor setup. Success is reported only once enrollment lifts the restriction.
+    private func beginTwoFactorEnrollment(_ response: AuthenticationResponse) {
+        client.session.login(response)
+        pendingAuth = response
+        view = .twoFactorEnrollment
+    }
+
+    /// Call once the user has added a two-factor method: refreshes the session for unrestricted
+    /// tokens and completes sign-in. When the server still reports enrollment pending, the user
+    /// stays on setup with an explanation.
+    public func handleTwoFactorEnrollmentCompleted() async {
+        guard view == .twoFactorEnrollment, !isLoading else { return }
+        clearMessages()
+        isLoading = true
+        defer { isLoading = false }
+
+        guard await client.session.refreshAfterTwoFactorEnrollment() else {
+            errorMessage = "Two-factor setup isn't complete yet. Add a verification method, then continue."
+            return
+        }
+        let response = client.session.user ?? pendingAuth
+        pendingAuth = nil
+        view = .login
+        if let response {
+            onAuthenticationSuccess?(response)
+        }
+    }
+
+    /// Leave required setup: signs the restricted session out and returns to sign-in.
+    public func cancelTwoFactorEnrollment() async {
+        await client.auth.logout()
+        client.session.logout()
+        resetChallengeState()
+        clearMessages()
+        view = .login
     }
 
     // MARK: - Login / registration
@@ -436,6 +489,12 @@ public final class WildwoodAuthModel {
                 },
                 appId: appId
             )
+
+            // Disclaimer acceptance is allowed on a restricted session; setup comes next.
+            if Self.needsTwoFactorEnrollment(pendingAuth) {
+                beginTwoFactorEnrollment(pendingAuth)
+                return
+            }
 
             onAuthenticationSuccess?(pendingAuth)
         } catch {
