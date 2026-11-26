@@ -38,6 +38,10 @@ public final class AuthService: Sendable {
 
     private let attributionWiring = Mutex(AttributionWiring())
 
+    /// The challenge session from the last passkey authentication-options call. The API accepts an
+    /// assertion only against the challenge it issued, identified by this id.
+    private let pendingPasskeySessionId = Mutex<String?>(nil)
+
     public init(
         http: WildwoodHttpClient,
         storage: any WildwoodStorageAdapter,
@@ -603,19 +607,36 @@ public final class AuthService: Sendable {
         struct AppIdDto: Encodable {
             let AppId: String
         }
-        return try await http.postData("api/webauthn/authenticate/options", body: AppIdDto(AppId: appId))
+        let data = try await http.postData("api/webauthn/authenticate/options", body: AppIdDto(AppId: appId))
+        let sessionId = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["sessionId"] as? String
+        pendingPasskeySessionId.withLock { $0 = sessionId }
+        return data
     }
 
-    public func verifyPasskeyAuthentication(appId: String, credential: PasskeyAssertionCredential) async throws -> AuthenticationResponse {
+    /// Verifies a passkey assertion. The API accepts it only against the challenge it issued, identified by
+    /// the options' `sessionId`: pass it explicitly, or it is taken from the last
+    /// `getPasskeyAuthenticationOptions` call.
+    public func verifyPasskeyAuthentication(
+        appId: String,
+        credential: PasskeyAssertionCredential,
+        sessionId: String? = nil
+    ) async throws -> AuthenticationResponse {
         struct PasskeyAuthDto: Encodable {
             let AppId: String
+            let SessionId: String?
             let Id: String
             let RawId: String
             let `Type`: String
             let Response: PasskeyAssertionResponse
         }
+        let pending = pendingPasskeySessionId.withLock { value -> String? in
+            let current = value
+            value = nil
+            return current
+        }
         let dto = PasskeyAuthDto(
             AppId: appId,
+            SessionId: sessionId ?? pending,
             Id: credential.id,
             RawId: credential.rawId,
             Type: credential.type,
