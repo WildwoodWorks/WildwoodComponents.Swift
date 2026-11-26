@@ -38,9 +38,9 @@ public final class AuthService: Sendable {
 
     private let attributionWiring = Mutex(AttributionWiring())
 
-    /// The challenge session from the last passkey authentication-options call. The API accepts an
-    /// assertion only against the challenge it issued, identified by this id.
-    private let pendingPasskeySessionId = Mutex<String?>(nil)
+    /// Issued passkey challenge sessions. The API accepts an assertion only against the challenge it
+    /// issued; the session is found again from the challenge in the assertion's client data.
+    private let passkeySessions = PasskeyChallengeSessions()
 
     public init(
         http: WildwoodHttpClient,
@@ -608,14 +608,13 @@ public final class AuthService: Sendable {
             let AppId: String
         }
         let data = try await http.postData("api/webauthn/authenticate/options", body: AppIdDto(AppId: appId))
-        let sessionId = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["sessionId"] as? String
-        pendingPasskeySessionId.withLock { $0 = sessionId }
+        passkeySessions.remember(optionsJSON: data)
         return data
     }
 
     /// Verifies a passkey assertion. The API accepts it only against the challenge it issued, identified by
-    /// the options' `sessionId`: pass it explicitly, or it is taken from the last
-    /// `getPasskeyAuthenticationOptions` call.
+    /// the options' `sessionId`: pass it explicitly, or it is found from the challenge in the credential's
+    /// client data (falling back to the last `getPasskeyAuthenticationOptions` call).
     public func verifyPasskeyAuthentication(
         appId: String,
         credential: PasskeyAssertionCredential,
@@ -629,11 +628,8 @@ public final class AuthService: Sendable {
             let `Type`: String
             let Response: PasskeyAssertionResponse
         }
-        let pending = pendingPasskeySessionId.withLock { value -> String? in
-            let current = value
-            value = nil
-            return current
-        }
+        // Found from the challenge in the signed client data, so concurrent sign-ins never cross.
+        let pending = passkeySessions.take(clientDataJSON: credential.response.clientDataJSON)
         let dto = PasskeyAuthDto(
             AppId: appId,
             SessionId: sessionId ?? pending,

@@ -44,4 +44,29 @@ struct PasskeySessionTests {
 
         #expect(verifyBody(backend).contains("\"SessionId\":\"explicit-1\""))
     }
+
+    private static func clientData(_ challenge: String) -> String {
+        let json = #"{"type":"webauthn.get","challenge":"\#(challenge)","origin":"https://example.com"}"#
+        return Data(json.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    @Test func concurrentSignInsEachFindTheirOwnSession() {
+        let sessions = PasskeyChallengeSessions()
+        sessions.remember(optionsJSON: Data(#"{"challenge":"Y2hhbGxlbmdlLWE","sessionId":"session-a"}"#.utf8))
+        sessions.remember(optionsJSON: Data(#"{"challenge":"Y2hhbGxlbmdlLWI","sessionId":"session-b"}"#.utf8))
+
+        #expect(sessions.take(clientDataJSON: Self.clientData("Y2hhbGxlbmdlLWE")) == "session-a")
+        #expect(sessions.take(clientDataJSON: Self.clientData("Y2hhbGxlbmdlLWI")) == "session-b")
+    }
+
+    @Test func unreadableClientDataFallsBackToTheLatestSession() {
+        let sessions = PasskeyChallengeSessions()
+        sessions.remember(optionsJSON: Data(#"{"challenge":"Y2hhbGxlbmdlLWE","sessionId":"session-a"}"#.utf8))
+
+        #expect(sessions.take(clientDataJSON: "not-base64!") == "session-a")
+        #expect(sessions.take(clientDataJSON: "not-base64!") == nil)
+    }
 }
