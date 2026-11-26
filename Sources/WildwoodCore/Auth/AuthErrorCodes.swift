@@ -13,4 +13,7 @@ public enum AuthErrorCodes {
     public static let accountDeactivated = "AccountDeactivated"
     public static let temporaryPasswordExpired = "TemporaryPasswordExpired"
     public static let userExists = "USER_EXISTS"
+    /// 403 on any call other than enrollment/auth/disclaimers while the app requires two-factor
+    /// authentication and the signed-in user has not set it up.
+    public static let twoFactorEnrollmentRequired = "TWO_FACTOR_ENROLLMENT_REQUIRED"
 }

@@ -10,6 +10,9 @@ public struct WildwoodError: Error, Sendable, Equatable {
         case notFound = "NotFound"
         case validationError = "ValidationError"
         case twoFactorRequired = "TwoFactorRequired"
+        /// 403 from an API call made with a restricted token: the app requires two-factor
+        /// authentication and the user has not enrolled (`TWO_FACTOR_ENROLLMENT_REQUIRED`).
+        case twoFactorEnrollmentRequired = "TwoFactorEnrollmentRequired"
         case sessionExpired = "SessionExpired"
         case rateLimited = "RateLimited"
         case serverError = "ServerError"
@@ -97,6 +100,7 @@ public struct WildwoodError: Error, Sendable, Equatable {
         case "NotFound": return .notFound
         case "ValidationError": return .validationError
         case "RateLimited": return .rateLimited
+        case AuthErrorCodes.twoFactorEnrollmentRequired: return .twoFactorEnrollmentRequired
         default: return nil
         }
     }

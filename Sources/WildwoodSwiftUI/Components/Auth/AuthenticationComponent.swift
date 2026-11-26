@@ -1,6 +1,7 @@
 #if os(iOS)
 // Complete login/register UI with social providers, 2FA challenge, forced
-// password reset, forgot password, and disclaimer acceptance — parity with
+// password reset, forgot password, disclaimer acceptance, and required two-factor
+// enrollment (the app requires 2FA and the user has none) — parity with
 // AuthenticationComponent in the React Native package.
 
 import SwiftUI
@@ -120,6 +121,7 @@ private struct AuthFlowView: View {
             case .passwordReset: passwordResetView
             case .forgotPassword: forgotPasswordView
             case .disclaimers: disclaimersView
+            case .twoFactorEnrollment: twoFactorEnrollmentView
             }
         }
     }
@@ -490,6 +492,46 @@ private struct AuthFlowView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
+            .disabled(model.isLoading)
+        }
+    }
+
+    // MARK: - Required two-factor enrollment
+
+    /// The app requires two-factor authentication and this user has none. The session is signed
+    /// in with restricted tokens, which the enrollment calls below accept; sign-in completes once
+    /// a method is enabled and the refreshed token no longer carries the restriction.
+    @ViewBuilder private var twoFactorEnrollmentView: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(
+                "This app requires two-factor authentication. Add a verification method to finish signing in.",
+                systemImage: "lock.shield"
+            )
+            .font(.callout)
+
+            TwoFactorSettingsComponent { status in
+                // Fires after each load, including the one that follows a completed enrollment.
+                if status.isEnabled {
+                    Task { await model.handleTwoFactorEnrollmentCompleted() }
+                }
+            }
+
+            Button {
+                Task { await model.handleTwoFactorEnrollmentCompleted() }
+            } label: {
+                if model.isLoading {
+                    ProgressView().frame(maxWidth: .infinity)
+                } else {
+                    Text("Continue").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.isLoading)
+
+            Button("Sign out", role: .cancel) {
+                Task { await model.cancelTwoFactorEnrollment() }
+            }
+            .frame(maxWidth: .infinity)
             .disabled(model.isLoading)
         }
     }

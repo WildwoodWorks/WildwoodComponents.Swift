@@ -505,6 +505,22 @@ their own navigation stack, or in a sheet.
 
 All three keep working exactly as documented; nothing has been removed.
 
+## Required two-factor authentication
+
+When an app requires two-factor authentication and the signing-in user has not set it up, the API
+still signs them in, but with RESTRICTED tokens: the auth response carries
+`requiresTwoFactorEnrollment: true` (the token carries the `tfa_enroll_pending` claim), and every
+call except two-factor enrollment, the auth endpoints and disclaimer acceptance is refused with 403
+`TWO_FACTOR_ENROLLMENT_REQUIRED`.
+
+- `AuthenticationComponent` handles it: the user lands on a "Set Up Two-Factor Authentication" view
+  (`TwoFactorSettingsComponent`), and sign-in completes (`onAuthenticationSuccess`) only once a
+  method is enabled and the refreshed session is unrestricted.
+- A custom flow reads `client.session.requiresTwoFactorEnrollment` (observable) or listens for
+  `WildwoodEvent.twoFactorEnrollmentRequired`, which is also raised when any call comes back with
+  that 403, then calls `await client.session.refreshAfterTwoFactorEnrollment()` after the user
+  enrolls. It returns `true` once the server issues an unrestricted token.
+
 ## Speech-to-text
 
 `client.ai.transcribeAudio(audioData:contentType:configurationId:language:)` posts a recorded clip

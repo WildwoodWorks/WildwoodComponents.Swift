@@ -153,6 +153,11 @@ public struct AuthenticationResponse: Codable, Sendable, Equatable {
     public var twoFactorSessionExpiresIn: Int?
     public var requiresDisclaimerAcceptance: Bool
     public var pendingDisclaimers: [PendingDisclaimerModel]?
+    /// The app requires two-factor authentication and this user has not set it up. The tokens are
+    /// RESTRICTED: the API refuses everything but two-factor enrollment, the auth endpoints, and
+    /// disclaimer acceptance (403 `TWO_FACTOR_ENROLLMENT_REQUIRED`) until the user enrolls and the
+    /// session is refreshed. See ``SessionManager/refreshAfterTwoFactorEnrollment()``.
+    public var requiresTwoFactorEnrollment: Bool
 
     public init(
         id: String = "",
@@ -172,7 +177,8 @@ public struct AuthenticationResponse: Codable, Sendable, Equatable {
         defaultTwoFactorMethod: String? = nil,
         twoFactorSessionExpiresIn: Int? = nil,
         requiresDisclaimerAcceptance: Bool = false,
-        pendingDisclaimers: [PendingDisclaimerModel]? = nil
+        pendingDisclaimers: [PendingDisclaimerModel]? = nil,
+        requiresTwoFactorEnrollment: Bool = false
     ) {
         self.id = id
         self.userId = userId
@@ -192,6 +198,7 @@ public struct AuthenticationResponse: Codable, Sendable, Equatable {
         self.twoFactorSessionExpiresIn = twoFactorSessionExpiresIn
         self.requiresDisclaimerAcceptance = requiresDisclaimerAcceptance
         self.pendingDisclaimers = pendingDisclaimers
+        self.requiresTwoFactorEnrollment = requiresTwoFactorEnrollment
     }
 
     public init(from decoder: Decoder) throws {
@@ -214,6 +221,7 @@ public struct AuthenticationResponse: Codable, Sendable, Equatable {
         twoFactorSessionExpiresIn = try container.decodeIfPresent(Int.self, forKey: .twoFactorSessionExpiresIn)
         requiresDisclaimerAcceptance = try container.decodeIfPresent(Bool.self, forKey: .requiresDisclaimerAcceptance) ?? false
         pendingDisclaimers = try container.decodeIfPresent([PendingDisclaimerModel].self, forKey: .pendingDisclaimers)
+        requiresTwoFactorEnrollment = try container.decodeIfPresent(Bool.self, forKey: .requiresTwoFactorEnrollment) ?? false
     }
 }
 
