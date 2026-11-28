@@ -653,6 +653,47 @@ struct TierFooterActionTests {
         #expect(TierCardRules.footerAction(tier: quiet, isCurrentTier: true) == TierFooterAction.none)
     }
 
+    // ── A switch the current plan does not allow (JS #38) ────────────────────
+
+    @Test func marksASwitchTheCurrentPlanDoesNotAllowAndRaisesNoSelection() throws {
+        let pro: AppTierModel = try plan(pricingOptions: [try paidOption()])
+
+        let action: TierFooterAction = TierCardRules.footerAction(tier: pro, isChangeAllowed: false)
+
+        #expect(action == .unavailable(title: TierCardRules.unavailableTitle))
+        #expect(TierCardRules.raisesSelection(action) == false)
+    }
+
+    @Test func anAllowedSwitchStillOffersTheOrdinaryCallToAction() throws {
+        let pro: AppTierModel = try plan(name: "Pro", pricingOptions: [try paidOption()])
+
+        #expect(TierCardRules.footerAction(tier: pro, isChangeAllowed: true) == .subscribe(title: "Select Pro"))
+    }
+
+    @Test func theCurrentPlanAndAContactLinkOutrankTheUnavailableMarker() throws {
+        let pro: AppTierModel = try plan(pricingOptions: [try paidOption()])
+        let contact: AppTierModel = try plan(
+            pricingOptions: [try paidOption()],
+            showContactButton: true,
+            contactButtonUrl: Self.tierContactUrl
+        )
+
+        #expect(
+            TierCardRules.footerAction(tier: pro, isCurrentTier: true, isChangeAllowed: false)
+                == .current(title: TierCardRules.currentPlanTitle)
+        )
+        if case .contactUs = TierCardRules.footerAction(tier: contact, isChangeAllowed: false) {
+        } else {
+            Issue.record("a tier's own contact button should still win")
+        }
+    }
+
+    @Test func aTierThatSwitchedItsCallToActionOffShowsNoMarkerEither() throws {
+        let quiet: AppTierModel = try plan(pricingOptions: [try paidOption()], showSubscribeButton: false)
+
+        #expect(TierCardRules.footerAction(tier: quiet, isChangeAllowed: false) == TierFooterAction.none)
+    }
+
     // ── Priority 1: the tier's own contact button ────────────────────────────
 
     @Test func showsOnlyContactUsForAnEnterprisePlanWithItsOwnContactButton() throws {

@@ -15,6 +15,8 @@
 //  2. an enterprise plan under the host's `enterpriseContactUrl`;
 //  3. an enterprise plan with nowhere to send anyone — React renders "Contact Sales" as a BUTTON
 //     that raises the selection, leaving the host to do the contacting;
+//  3½. a switch the subscriber's current plan does not allow (`TierChangeRules`) — a marker,
+//     not an action (JS #38);
 //  4. the ordinary subscribe call to action.
 //
 // The chain lives in this file rather than in the view because nothing inside a SwiftUI `body` can
@@ -38,6 +40,9 @@ public enum TierFooterAction: Sendable, Equatable {
     /// selection so the host can start its own contact flow: this is React's priority 3, and the
     /// only way a plan with no pricing may hand a payload back without being a free plan.
     case contactSalesRequest(title: String)
+    /// The subscriber's current plan does not allow a move to this one (`TierChangeRules`).
+    /// A marker in place of the switch the server would only refuse; raises no selection.
+    case unavailable(title: String)
     /// Priority 4 — the ordinary buy/switch call to action.
     case subscribe(title: String)
     /// Nothing to offer: the tier suppressed its call to action and named no contact URL.
@@ -52,6 +57,7 @@ public enum TierCardRules {
     public static let contactUsTitle: String = "Contact Us"
     public static let contactSalesTitle: String = "Contact Sales"
     public static let preSelectedSubscribeTitle: String = "Continue with This Plan"
+    public static let unavailableTitle: String = "Not available on your plan"
 
     /// The ordinary call to action's wording.
     public static func subscribeTitle(tierName: String) -> String {
@@ -82,6 +88,8 @@ public enum TierCardRules {
     ///   - enterpriseContactUrl: the host's fallback for a plan that names no URL of its own.
     ///   - isCurrentTier: the plan the visitor is already on.
     ///   - isPreSelected: already chosen elsewhere (a pricing link, a host's `highlightTierId`).
+    ///   - isChangeAllowed: false when the subscriber's current plan does not allow a move here
+    ///     (`TierChangeRules/isTierChangeAllowed(current:target:)`). Default true.
     public static func footerAction(
         tierName: String,
         isFreeTier: Bool,
@@ -91,7 +99,8 @@ public enum TierCardRules {
         contactButtonUrl: String?,
         enterpriseContactUrl: String? = nil,
         isCurrentTier: Bool = false,
-        isPreSelected: Bool = false
+        isPreSelected: Bool = false,
+        isChangeAllowed: Bool = true
     ) -> TierFooterAction {
         // Priority 0. Gated on `showSubscribeButton`, which is the ONE deliberate departure from
         // React's chain: a tier that has switched its call to action off has always rendered an
@@ -118,6 +127,11 @@ public enum TierCardRules {
 
         // Priority 4.
         guard showSubscribeButton else { return TierFooterAction.none }
+        // A switch the current plan does not allow: a marker, not a button the server would
+        // only refuse (React's TierCardFooter `unavailable`, JS #38).
+        if !isChangeAllowed {
+            return .unavailable(title: unavailableTitle)
+        }
         let title: String = isPreSelected ? preSelectedSubscribeTitle : subscribeTitle(tierName: tierName)
         return .subscribe(title: title)
     }
@@ -127,7 +141,8 @@ public enum TierCardRules {
         tier: AppTierModel,
         isCurrentTier: Bool = false,
         isPreSelected: Bool = false,
-        enterpriseContactUrl: String? = nil
+        enterpriseContactUrl: String? = nil,
+        isChangeAllowed: Bool = true
     ) -> TierFooterAction {
         footerAction(
             tierName: tier.name,
@@ -138,7 +153,8 @@ public enum TierCardRules {
             contactButtonUrl: tier.contactButtonUrl,
             enterpriseContactUrl: enterpriseContactUrl,
             isCurrentTier: isCurrentTier,
-            isPreSelected: isPreSelected
+            isPreSelected: isPreSelected,
+            isChangeAllowed: isChangeAllowed
         )
     }
 
@@ -153,7 +169,7 @@ public enum TierCardRules {
         switch action {
         case .subscribe, .contactSalesRequest:
             return true
-        case .current, .contactUs, .contactSales, TierFooterAction.none:
+        case .current, .contactUs, .contactSales, .unavailable, TierFooterAction.none:
             return false
         }
     }

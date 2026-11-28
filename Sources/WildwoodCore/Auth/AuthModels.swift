@@ -668,3 +668,57 @@ public struct PasskeyRegistrationCredential: Codable, Sendable {
         self.response = response
     }
 }
+
+/// A passkey registered to the signed-in user (`api/webauthn/credentials`). Mirrors the backend
+/// UserPasskeyDto, .NET `UserPasskey` and JS `UserPasskey`. Dates stay ISO-8601 strings, as in JS.
+public struct UserPasskey: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var friendlyName: String?
+    public var deviceInfo: String?
+    public var isPlatformAuthenticator: Bool
+    public var isActive: Bool
+    public var lastUsedAt: String?
+    public var usageCount: Int
+    public var createdAt: String?
+
+    public init(
+        id: String,
+        friendlyName: String? = nil,
+        deviceInfo: String? = nil,
+        isPlatformAuthenticator: Bool = false,
+        isActive: Bool = true,
+        lastUsedAt: String? = nil,
+        usageCount: Int = 0,
+        createdAt: String? = nil
+    ) {
+        self.id = id
+        self.friendlyName = friendlyName
+        self.deviceInfo = deviceInfo
+        self.isPlatformAuthenticator = isPlatformAuthenticator
+        self.isActive = isActive
+        self.lastUsedAt = lastUsedAt
+        self.usageCount = usageCount
+        self.createdAt = createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        friendlyName = try c.decodeIfPresent(String.self, forKey: .friendlyName)
+        deviceInfo = try c.decodeIfPresent(String.self, forKey: .deviceInfo)
+        isPlatformAuthenticator = try c.decodeIfPresent(Bool.self, forKey: .isPlatformAuthenticator) ?? false
+        isActive = try c.decodeIfPresent(Bool.self, forKey: .isActive) ?? true
+        lastUsedAt = try c.decodeIfPresent(String.self, forKey: .lastUsedAt)
+        usageCount = try c.decodeIfPresent(Int.self, forKey: .usageCount) ?? 0
+        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+    }
+
+    /// The name to show: the user's own name for it, else the kind of authenticator (the same rule
+    /// as .NET `UserPasskey.DisplayName` and JS `passkeyDisplayName`).
+    public var displayName: String {
+        if let name = friendlyName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        return isPlatformAuthenticator ? "This device (built-in)" : "Security key"
+    }
+}

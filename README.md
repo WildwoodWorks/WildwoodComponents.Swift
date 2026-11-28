@@ -520,6 +520,35 @@ call except two-factor enrollment, the auth endpoints and disclaimer acceptance 
   `WildwoodEvent.twoFactorEnrollmentRequired`, which is also raised when any call comes back with
   that 403, then calls `await client.session.refreshAfterTwoFactorEnrollment()` after the user
   enrolls. It returns `true` once the server issues an unrestricted token.
+- The event carries `source` (`.authResponse` or `.apiRefusal`), and lifting the restriction raises
+  `WildwoodEvent.twoFactorEnrollmentCompleted` — the JS SDK's event pair. `isTwoFactorEnrollmentPending`
+  and `completeTwoFactorEnrollment()` are the JS-named spellings of the same session API
+  (`completeTwoFactorEnrollment()` skips the refresh when nothing is restricted).
+- `AuthenticationComponent(onTwoFactorEnrollmentRequired:)` hands the restricted sign-in to your own
+  flow instead of showing the built-in enrollment view.
+- `TwoFactorSettingsComponent` lifts the restriction itself after an email or authenticator
+  enrollment succeeds. Pass `appId:` and, when the app has no two-factor provider enabled, it says
+  sign-in will not ask for a code and offers no new enrollment.
+
+## Passkey management
+
+`client.auth` lists, renames and removes the signed-in user's passkeys (`listPasskeys(appId:)`,
+`renamePasskey(id:friendlyName:)`, `deletePasskey(id:)`), checks `isPasskeyEnabled(appId:)`, and
+`getPasskeyRegistrationOptions(appId:friendlyName:)` names a new one. `PasskeyManagementView` is
+the screen — the same branches and wording as the web and React Native ones. The package takes no
+AuthenticationServices dependency, so the creation ceremony is yours to supply:
+
+```swift
+PasskeyManagementView(createCredential: { optionsJSON in
+    // Run an ASAuthorizationPlatformPublicKeyCredentialProvider registration over optionsJSON
+    // (your app needs the associated-domains entitlement), then map the result.
+    try await myPasskeyRegistrar.register(optionsJSON)   // -> PasskeyRegistrationCredential
+})
+```
+
+Throw `CancellationError` when the user dismisses the system sheet; it is reported as nothing.
+Without `createCredential`, passkeys can still be listed, renamed and removed, and the add control
+is replaced by a notice.
 
 ## Speech-to-text
 

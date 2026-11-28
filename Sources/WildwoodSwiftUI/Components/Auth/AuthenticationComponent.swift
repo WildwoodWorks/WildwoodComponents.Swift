@@ -28,6 +28,9 @@ public struct AuthenticationComponent: View {
     /// resolved registration access. Without it the button opens this
     /// component's own register view.
     private let onRegisterClick: (() -> Void)?
+    /// The app requires two-factor and this user has none: the host takes over instead of the
+    /// built-in enrollment view. See `WildwoodAuthModel`.
+    private let onTwoFactorEnrollmentRequired: ((AuthenticationResponse) -> Void)?
 
     @State private var model: WildwoodAuthModel?
 
@@ -39,7 +42,8 @@ public struct AuthenticationComponent: View {
         allowRegistration: Bool? = nil,
         onAuthenticationSuccess: ((AuthenticationResponse) -> Void)? = nil,
         onAuthenticationError: ((String) -> Void)? = nil,
-        onRegisterClick: (() -> Void)? = nil
+        onRegisterClick: (() -> Void)? = nil,
+        onTwoFactorEnrollmentRequired: ((AuthenticationResponse) -> Void)? = nil
     ) {
         self.appId = appId
         self.title = title
@@ -49,6 +53,7 @@ public struct AuthenticationComponent: View {
         self.onAuthenticationSuccess = onAuthenticationSuccess
         self.onAuthenticationError = onAuthenticationError
         self.onRegisterClick = onRegisterClick
+        self.onTwoFactorEnrollmentRequired = onTwoFactorEnrollmentRequired
     }
 
     public var body: some View {
@@ -72,7 +77,8 @@ public struct AuthenticationComponent: View {
                 title: title,
                 showDetailedErrors: showDetailedErrors,
                 onAuthenticationSuccess: onAuthenticationSuccess,
-                onAuthenticationError: onAuthenticationError
+                onAuthenticationError: onAuthenticationError,
+                onTwoFactorEnrollmentRequired: onTwoFactorEnrollmentRequired
             )
             model = created
             await created.loadConfiguration()

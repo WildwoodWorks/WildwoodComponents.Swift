@@ -66,6 +66,20 @@ public final class SessionManager {
     /// call ``refreshAfterTwoFactorEnrollment()`` to lift it.
     public private(set) var requiresTwoFactorEnrollment = false
 
+    /// JS's name for ``requiresTwoFactorEnrollment`` (`session.isTwoFactorEnrollmentPending`), so a
+    /// cross-stack test plan or a port reads the same word in both stacks.
+    public var isTwoFactorEnrollmentPending: Bool { requiresTwoFactorEnrollment }
+
+    /// JS's `session.completeTwoFactorEnrollment()`: true when the session is no longer restricted
+    /// (also when it never was — no refresh is made then); otherwise refreshes, as
+    /// ``refreshAfterTwoFactorEnrollment()`` does, and reports whether that lifted it.
+    @discardableResult
+    public func completeTwoFactorEnrollment() async -> Bool {
+        guard currentUser?.jwtToken.isEmpty == false else { return false }
+        guard requiresTwoFactorEnrollment else { return true }
+        return await refreshAfterTwoFactorEnrollment()
+    }
+
     public init(
         config: WildwoodConfig,
         authService: AuthService,
@@ -326,20 +340,25 @@ public final class SessionManager {
     private func updateTwoFactorEnrollmentState(from response: AuthenticationResponse) {
         let pending = response.requiresTwoFactorEnrollment
             || JWTDecoder.isTwoFactorEnrollmentPending(response.jwtToken)
-        setTwoFactorEnrollmentRequired(pending)
+        setTwoFactorEnrollmentRequired(pending, source: .authResponse)
     }
 
     /// The API refused a call with `TWO_FACTOR_ENROLLMENT_REQUIRED`.
     func markTwoFactorEnrollmentRequired() {
         guard currentUser != nil else { return }
-        setTwoFactorEnrollmentRequired(true)
+        setTwoFactorEnrollmentRequired(true, source: .apiRefusal)
     }
 
-    private func setTwoFactorEnrollmentRequired(_ pending: Bool) {
+    /// Announces both edges, as JS `setEnrollmentPending` does: entering the restriction raises
+    /// `.twoFactorEnrollmentRequired(source:)`, leaving it raises `.twoFactorEnrollmentCompleted`.
+    /// Sign-out clears the flag directly and announces nothing (no restriction was lifted).
+    private func setTwoFactorEnrollmentRequired(_ pending: Bool, source: TwoFactorEnrollmentSource) {
         let wasPending = requiresTwoFactorEnrollment
         requiresTwoFactorEnrollment = pending
         if pending, !wasPending {
-            events.emit(.twoFactorEnrollmentRequired)
+            events.emit(.twoFactorEnrollmentRequired(source: source))
+        } else if !pending, wasPending {
+            events.emit(.twoFactorEnrollmentCompleted)
         }
     }
 

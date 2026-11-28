@@ -21,6 +21,9 @@ public struct TierCard: View {
     /// Where a "contact us" plan (no pricing options, not free) sends the visitor when the tier
     /// itself names no contact URL. The web's `enterpriseContactUrl`.
     let enterpriseContactUrl: String?
+    /// False when the subscriber's current plan does not allow a move to this one
+    /// (`TierChangeRules`): the footer shows a marker instead of a switch the server would refuse.
+    let isChangeAllowed: Bool
     let onSelectPricing: ((AppTierPricingModel) -> Void)?
     let onSubscribe: ((AppTierModel, AppTierPricingModel?) -> Void)?
 
@@ -34,6 +37,7 @@ public struct TierCard: View {
         showFeatures: Bool = true,
         showLimits: Bool = true,
         enterpriseContactUrl: String? = nil,
+        isChangeAllowed: Bool = true,
         onSelectPricing: ((AppTierPricingModel) -> Void)? = nil,
         onSubscribe: ((AppTierModel, AppTierPricingModel?) -> Void)? = nil
     ) {
@@ -46,6 +50,7 @@ public struct TierCard: View {
         self.showFeatures = showFeatures
         self.showLimits = showLimits
         self.enterpriseContactUrl = enterpriseContactUrl
+        self.isChangeAllowed = isChangeAllowed
         self.onSelectPricing = onSelectPricing
         self.onSubscribe = onSubscribe
     }
@@ -86,7 +91,8 @@ public struct TierCard: View {
                 tier: tier,
                 isCurrentTier: isCurrentTier,
                 isPreSelected: isPreSelected,
-                enterpriseContactUrl: enterpriseContactUrl
+                enterpriseContactUrl: enterpriseContactUrl,
+                isChangeAllowed: isChangeAllowed
             ) {
                 onSubscribe?(tier, resolvedPricing)
             }
@@ -304,6 +310,8 @@ public struct TierCardFooter: View {
     let isPreSelected: Bool
     /// Where a "contact us" plan goes when the tier names no contact URL of its own.
     let enterpriseContactUrl: String?
+    /// False when the current plan does not allow a move here: a marker replaces the switch.
+    let isChangeAllowed: Bool
     let onSubscribe: () -> Void
     @Environment(\.openURL) private var openURL
 
@@ -312,12 +320,14 @@ public struct TierCardFooter: View {
         isCurrentTier: Bool,
         isPreSelected: Bool = false,
         enterpriseContactUrl: String? = nil,
+        isChangeAllowed: Bool = true,
         onSubscribe: @escaping () -> Void
     ) {
         self.tier = tier
         self.isCurrentTier = isCurrentTier
         self.isPreSelected = isPreSelected
         self.enterpriseContactUrl = enterpriseContactUrl
+        self.isChangeAllowed = isChangeAllowed
         self.onSubscribe = onSubscribe
     }
 
@@ -336,6 +346,15 @@ public struct TierCardFooter: View {
                 linkButton(TierCardRules.contactSalesTitle, url: url)
             case .contactSalesRequest(let title):
                 actionButton(title, prominent: false, disabled: false, perform: onSubscribe)
+            case .unavailable(let title):
+                // A marker, not a disabled button: like "Current Plan" it is not an action, so
+                // VoiceOver does not offer it as one.
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .accessibilityAddTraits(.isStaticText)
             case .subscribe(let title):
                 actionButton(title, prominent: true, disabled: false, perform: onSubscribe)
             case TierFooterAction.none:
@@ -350,7 +369,8 @@ public struct TierCardFooter: View {
             tier: tier,
             isCurrentTier: isCurrentTier,
             isPreSelected: isPreSelected,
-            enterpriseContactUrl: enterpriseContactUrl
+            enterpriseContactUrl: enterpriseContactUrl,
+            isChangeAllowed: isChangeAllowed
         )
     }
 

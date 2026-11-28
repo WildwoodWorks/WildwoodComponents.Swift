@@ -198,6 +198,13 @@ public struct TierPlansPanel: View {
     @State private var selectedPricingByTier: [String: String] = [:]
     @State private var pendingChange: (tier: AppTierModel, pricing: AppTierPricingModel?)?
 
+    /// The subscriber's current tier, for the switch rule. Nil with no subscription (a first
+    /// subscription is always allowed).
+    private var currentTier: AppTierModel? {
+        guard let currentId = model.subscription?.appTierId else { return nil }
+        return model.tiers.first { $0.id.lowercased() == currentId.lowercased() }
+    }
+
     public init(
         model: WildwoodSubscriptionAdminModel,
         onPaymentRequired: ((WildwoodPaymentRequiredArgs) async -> String?)? = nil,
@@ -221,6 +228,9 @@ public struct TierPlansPanel: View {
                     isCurrentTier: tier.id == model.subscription?.appTierId,
                     currency: currency ?? model.catalogCurrency,
                     enterpriseContactUrl: contactUrl,
+                    // The server refuses a move the current plan does not allow, admins
+                    // included; offer none (JS #38).
+                    isChangeAllowed: TierChangeRules.isTierChangeAllowed(current: currentTier, target: tier),
                     onSelectPricing: { pricing in
                         selectedPricingByTier[tier.id] = pricing.id
                     },

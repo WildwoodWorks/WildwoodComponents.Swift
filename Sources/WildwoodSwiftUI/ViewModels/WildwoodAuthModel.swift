@@ -24,6 +24,11 @@ public final class WildwoodAuthModel {
     @ObservationIgnored private let deviceName: String
     @ObservationIgnored private let onAuthenticationSuccess: ((AuthenticationResponse) -> Void)?
     @ObservationIgnored private let onAuthenticationError: ((String) -> Void)?
+    /// The app requires two-factor and this user has none. When set, the host takes over (e.g.
+    /// routes to its own security screen) and the built-in enrollment view is NOT shown; the
+    /// restricted session is still signed in, because enrollment calls need its tokens. Same
+    /// contract as .NET's OnTwoFactorEnrollmentRequired and JS's onTwoFactorEnrollmentRequired.
+    @ObservationIgnored private let onTwoFactorEnrollmentRequired: ((AuthenticationResponse) -> Void)?
 
     // View state
     public private(set) var view: AuthView = .login
@@ -79,7 +84,8 @@ public final class WildwoodAuthModel {
         title: String? = nil,
         showDetailedErrors: Bool = true,
         onAuthenticationSuccess: ((AuthenticationResponse) -> Void)? = nil,
-        onAuthenticationError: ((String) -> Void)? = nil
+        onAuthenticationError: ((String) -> Void)? = nil,
+        onTwoFactorEnrollmentRequired: ((AuthenticationResponse) -> Void)? = nil
     ) {
         self.client = client
         self.appId = appId ?? client.config.appId
@@ -90,6 +96,7 @@ public final class WildwoodAuthModel {
         self.deviceName = "iOS Device"
         self.onAuthenticationSuccess = onAuthenticationSuccess
         self.onAuthenticationError = onAuthenticationError
+        self.onTwoFactorEnrollmentRequired = onTwoFactorEnrollmentRequired
     }
 
     // MARK: - Configuration
@@ -248,6 +255,10 @@ public final class WildwoodAuthModel {
     /// two-factor setup. Success is reported only once enrollment lifts the restriction.
     private func beginTwoFactorEnrollment(_ response: AuthenticationResponse) {
         client.session.login(response)
+        if let onTwoFactorEnrollmentRequired {
+            onTwoFactorEnrollmentRequired(response)
+            return
+        }
         pendingAuth = response
         view = .twoFactorEnrollment
     }
