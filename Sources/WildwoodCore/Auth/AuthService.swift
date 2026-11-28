@@ -646,11 +646,85 @@ public final class AuthService: Sendable {
         return data
     }
 
-    public func getPasskeyRegistrationOptions(appId: String) async throws -> Data {
-        struct AppIdDto: Encodable {
+    /// Registration options for the platform's passkey ceremony. `friendlyName` is the user's own
+    /// name for the new passkey; blank is sent as null so the server falls back to the
+    /// authenticator kind (JS / .NET parity).
+    public func getPasskeyRegistrationOptions(appId: String, friendlyName: String? = nil) async throws -> Data {
+        struct RegistrationOptionsDto: Encodable {
             let AppId: String
+            let FriendlyName: String?
+
+            func encode(to encoder: Encoder) throws {
+                var c = encoder.container(keyedBy: CodingKeys.self)
+                try c.encode(AppId, forKey: .AppId)
+                // Explicit null, as JS sends, rather than omitting the key.
+                try c.encode(FriendlyName, forKey: .FriendlyName)
+            }
+
+            enum CodingKeys: String, CodingKey { case AppId, FriendlyName }
         }
-        return try await http.postData("api/webauthn/register/options", body: AppIdDto(AppId: appId))
+        let trimmed = friendlyName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name: String? = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        return try await http.postData(
+            "api/webauthn/register/options",
+            body: RegistrationOptionsDto(AppId: appId, FriendlyName: name)
+        )
+    }
+
+    /// Whether passkeys are enabled for the app at all (an anonymous endpoint). Any failure
+    /// answers false, so a host can hide passkey UI rather than show a control that cannot work.
+    /// Accepts a bare boolean or `{ "enabled": bool }` (any key casing), as .NET does.
+    public func isPasskeyEnabled(appId: String) async -> Bool {
+        let escaped = Self.escapeSegment(appId)
+        guard let data = try? await http.getData("api/webauthn/enabled/\(escaped)", skipAuth: true) else {
+            return false
+        }
+        return Self.readPasskeyEnabled(data)
+    }
+
+    /// Percent-escapes everything but RFC 3986 unreserved characters, so an id can never smuggle a
+    /// path separator or a query delimiter (encodeURIComponent / Uri.EscapeDataString parity).
+    static func escapeSegment(_ value: String) -> String {
+        var unreserved = CharacterSet.alphanumerics
+        unreserved.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: unreserved) ?? value
+    }
+
+    static func readPasskeyEnabled(_ data: Data) -> Bool {
+        guard let json = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else {
+            return false
+        }
+        if let flag = json as? Bool { return flag }
+        if let object = json as? [String: Any] {
+            for (key, value) in object where key.lowercased() == "enabled" {
+                return (value as? Bool) ?? false
+            }
+        }
+        return false
+    }
+
+    /// The signed-in user's passkeys for this app.
+    public func listPasskeys(appId: String) async throws -> [UserPasskey] {
+        let escaped = Self.escapeSegment(appId)
+        return try await http.get("api/webauthn/credentials?appId=\(escaped)")
+    }
+
+    /// Renames one of the signed-in user's passkeys; returns the updated passkey.
+    public func renamePasskey(id: String, friendlyName: String) async throws -> UserPasskey {
+        struct RenameDto: Encodable, Sendable {
+            let FriendlyName: String
+        }
+        let escaped = Self.escapeSegment(id)
+        return try await http.patch(
+            "api/webauthn/credentials/\(escaped)",
+            body: RenameDto(FriendlyName: friendlyName.trimmingCharacters(in: .whitespacesAndNewlines))
+        )
+    }
+
+    /// Removes one of the signed-in user's passkeys.
+    public func deletePasskey(id: String) async throws {
+        let escaped = Self.escapeSegment(id)
+        try await http.deleteVoid("api/webauthn/credentials/\(escaped)")
     }
 
     public func completePasskeyRegistration(appId: String, credential: PasskeyRegistrationCredential) async throws {

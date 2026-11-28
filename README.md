@@ -530,6 +530,26 @@ call except two-factor enrollment, the auth endpoints and disclaimer acceptance 
   enrollment succeeds. Pass `appId:` and, when the app has no two-factor provider enabled, it says
   sign-in will not ask for a code and offers no new enrollment.
 
+## Passkey management
+
+`client.auth` lists, renames and removes the signed-in user's passkeys (`listPasskeys(appId:)`,
+`renamePasskey(id:friendlyName:)`, `deletePasskey(id:)`), checks `isPasskeyEnabled(appId:)`, and
+`getPasskeyRegistrationOptions(appId:friendlyName:)` names a new one. `PasskeyManagementView` is
+the screen — the same branches and wording as the web and React Native ones. The package takes no
+AuthenticationServices dependency, so the creation ceremony is yours to supply:
+
+```swift
+PasskeyManagementView(createCredential: { optionsJSON in
+    // Run an ASAuthorizationPlatformPublicKeyCredentialProvider registration over optionsJSON
+    // (your app needs the associated-domains entitlement), then map the result.
+    try await myPasskeyRegistrar.register(optionsJSON)   // -> PasskeyRegistrationCredential
+})
+```
+
+Throw `CancellationError` when the user dismisses the system sheet; it is reported as nothing.
+Without `createCredential`, passkeys can still be listed, renamed and removed, and the add control
+is replaced by a notice.
+
 ## Speech-to-text
 
 `client.ai.transcribeAudio(audioData:contentType:configurationId:language:)` posts a recorded clip
