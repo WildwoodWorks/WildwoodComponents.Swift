@@ -15,8 +15,13 @@ public enum WildwoodEvent: Sendable {
     /// The signed-in session is restricted until the user enrolls in two-factor authentication:
     /// the auth response said so, or an API call was refused with `TWO_FACTOR_ENROLLMENT_REQUIRED`.
     /// Route the user to two-factor setup, then call
-    /// ``SessionManager/refreshAfterTwoFactorEnrollment()``.
-    case twoFactorEnrollmentRequired
+    /// ``SessionManager/refreshAfterTwoFactorEnrollment()``. `source` says which of the two raised
+    /// it (JS `twoFactorEnrollmentRequired { source }`). A host matching `case .twoFactorEnrollmentRequired:`
+    /// without binding the payload keeps compiling.
+    case twoFactorEnrollmentRequired(source: TwoFactorEnrollmentSource)
+    /// The restriction above was lifted: a refreshed token no longer carries it
+    /// (JS `twoFactorEnrollmentCompleted`).
+    case twoFactorEnrollmentCompleted
     case themeChanged(String)
     /// An entitlement mutation landed (tier change, cancel, add-on, override …): re-read the
     /// subscription and the feature map. A SIGNAL to refresh, not proof the change has
@@ -26,6 +31,15 @@ public enum WildwoodEvent: Sendable {
     /// (`AttributionService.capture(url:referrer:)`).
     case attributionCaptured(AttributionTouch)
     case error(service: String, message: String)
+}
+
+/// What put the session into "two-factor enrollment required". Raw values are the JS event's
+/// `source` strings.
+public enum TwoFactorEnrollmentSource: String, Sendable, Equatable {
+    /// An auth response (or the restored session) carried the flag or the token claim.
+    case authResponse
+    /// The API refused a call with 403 `TWO_FACTOR_ENROLLMENT_REQUIRED`.
+    case apiRefusal
 }
 
 public struct WildwoodSubscription: Sendable {

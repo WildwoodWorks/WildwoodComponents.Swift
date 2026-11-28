@@ -157,3 +157,84 @@ struct SessionTwoFactorEnrollmentTests {
         #expect(!client.session.requiresTwoFactorEnrollment)
     }
 }
+
+/// The JS event payloads and names (`twoFactorEnrollmentRequired { source }`,
+/// `twoFactorEnrollmentCompleted`, `isTwoFactorEnrollmentPending`, `completeTwoFactorEnrollment()`).
+@MainActor
+struct SessionTwoFactorEnrollmentParityTests {
+    private final class Recorder {
+        var sources: [TwoFactorEnrollmentSource] = []
+        var completed = 0
+    }
+
+    private func makeClient() async -> (WildwoodClient, MockBackend, Recorder) {
+        let backend = MockBackend()
+        let client = WildwoodClient(
+            config: WildwoodConfig(baseUrl: backend.baseUrl, appId: "app-1", enableRetry: false, storage: .memory),
+            urlSession: backend.makeSession()
+        )
+        let recorder = Recorder()
+        client.events.on { event in
+            switch event {
+            case .twoFactorEnrollmentRequired(let source): recorder.sources.append(source)
+            case .twoFactorEnrollmentCompleted: recorder.completed += 1
+            default: break
+            }
+        }
+        await client.session.initialize()
+        return (client, backend, recorder)
+    }
+
+    @Test func aRestrictedSignInIsAnnouncedWithItsSource() async {
+        let (client, _, recorder) = await makeClient()
+
+        client.session.login(AuthenticationResponse(userId: "u1", jwtToken: restrictedToken, refreshToken: "r1"))
+
+        #expect(recorder.sources == [.authResponse])
+        #expect(client.session.isTwoFactorEnrollmentPending)
+    }
+
+    @Test func aRefusalIsAnnouncedAsAnApiRefusal() async {
+        let (client, backend, recorder) = await makeClient()
+        client.session.login(AuthenticationResponse(userId: "u1", jwtToken: normalToken, refreshToken: "r1"))
+        backend.stub("GET", "/api/users", .init(statusCode: 403, json: """
+        {"error":"Two-factor authentication must be set up first.","errorCode":"TWO_FACTOR_ENROLLMENT_REQUIRED"}
+        """))
+
+        _ = try? await client.http.get("api/users") as EmptyBody
+
+        #expect(recorder.sources == [.apiRefusal])
+    }
+
+    @Test func liftingTheRestrictionAnnouncesCompletion() async {
+        let (client, backend, recorder) = await makeClient()
+        client.storage.setItem(WildwoodStorageKeys.refreshToken, "r1")
+        client.session.login(AuthenticationResponse(userId: "u1", jwtToken: restrictedToken, refreshToken: "r1"))
+        backend.stub("POST", "/api/auth/refresh-token", .init(json: """
+        {"userId":"u1","jwtToken":"\(normalToken)","refreshToken":"r2","requiresTwoFactorEnrollment":false}
+        """))
+
+        let lifted = await client.session.completeTwoFactorEnrollment()
+
+        #expect(lifted)
+        #expect(!client.session.isTwoFactorEnrollmentPending)
+        #expect(recorder.completed == 1)
+    }
+
+    @Test func completingAnUnrestrictedSessionIsTrueWithoutARefresh() async {
+        let (client, _, recorder) = await makeClient()
+        client.session.login(AuthenticationResponse(userId: "u1", jwtToken: normalToken, refreshToken: "r1"))
+
+        #expect(await client.session.completeTwoFactorEnrollment())
+        #expect(recorder.completed == 0)
+    }
+
+    @Test func signingOutAnnouncesNoCompletion() async {
+        let (client, _, recorder) = await makeClient()
+        client.session.login(AuthenticationResponse(userId: "u1", jwtToken: restrictedToken, refreshToken: "r1"))
+
+        client.session.logout()
+
+        #expect(recorder.completed == 0)
+    }
+}

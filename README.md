@@ -520,6 +520,15 @@ call except two-factor enrollment, the auth endpoints and disclaimer acceptance 
   `WildwoodEvent.twoFactorEnrollmentRequired`, which is also raised when any call comes back with
   that 403, then calls `await client.session.refreshAfterTwoFactorEnrollment()` after the user
   enrolls. It returns `true` once the server issues an unrestricted token.
+- The event carries `source` (`.authResponse` or `.apiRefusal`), and lifting the restriction raises
+  `WildwoodEvent.twoFactorEnrollmentCompleted` — the JS SDK's event pair. `isTwoFactorEnrollmentPending`
+  and `completeTwoFactorEnrollment()` are the JS-named spellings of the same session API
+  (`completeTwoFactorEnrollment()` skips the refresh when nothing is restricted).
+- `AuthenticationComponent(onTwoFactorEnrollmentRequired:)` hands the restricted sign-in to your own
+  flow instead of showing the built-in enrollment view.
+- `TwoFactorSettingsComponent` lifts the restriction itself after an email or authenticator
+  enrollment succeeds. Pass `appId:` and, when the app has no two-factor provider enabled, it says
+  sign-in will not ask for a code and offers no new enrollment.
 
 ## Speech-to-text
 

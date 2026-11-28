@@ -11,6 +11,11 @@ public struct TwoFactorSettingsComponent: View {
     @Environment(\.wildwoodClient) private var client
 
     private let onStatusChanged: ((TwoFactorUserStatus) -> Void)?
+    /// The host's app. When given and the app has no two-factor provider enabled, the screen says
+    /// so and offers no new enrollment (existing methods can still be removed) — the Blazor
+    /// component's "app-not-enforcing" notice. Nil: no check, as on every other stack.
+    private let appId: String?
+    @State private var appDoesNotEnforce = false
 
     @State private var isLoading = true
     @State private var errorMessage = ""
@@ -32,7 +37,8 @@ public struct TwoFactorSettingsComponent: View {
     // Recovery codes
     @State private var regeneratedCodes: [String] = []
 
-    public init(onStatusChanged: ((TwoFactorUserStatus) -> Void)? = nil) {
+    public init(appId: String? = nil, onStatusChanged: ((TwoFactorUserStatus) -> Void)? = nil) {
+        self.appId = appId
         self.onStatusChanged = onStatusChanged
     }
 
@@ -48,9 +54,18 @@ public struct TwoFactorSettingsComponent: View {
             if isLoading {
                 LoadingSpinnerView(label: "Loading security settings…")
             } else {
+                if appDoesNotEnforce {
+                    Label(TwoFactorSettingsRules.appNotEnforcingMessage(hasMethods: status?.isEnabled == true),
+                          systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("2fa-notice:app-not-enforcing")
+                }
                 statusSection
                 credentialsSection
-                enrollmentButtons
+                if !appDoesNotEnforce {
+                    enrollmentButtons
+                }
                 recoverySection
                 trustedDevicesSection
             }
@@ -249,6 +264,7 @@ public struct TwoFactorSettingsComponent: View {
                             )
                             if ok {
                                 showEmailEnrollment = false
+                                await liftEnrollmentRestriction(client)
                                 await load()
                             } else {
                                 errorMessage = "Email verification failed."
@@ -321,6 +337,7 @@ public struct TwoFactorSettingsComponent: View {
                             )
                             if ok {
                                 showAuthenticatorEnrollment = false
+                                await liftEnrollmentRestriction(client)
                                 await load()
                             } else {
                                 errorMessage = "Authenticator verification failed."
@@ -366,6 +383,21 @@ public struct TwoFactorSettingsComponent: View {
         }
         credentials = await client.twoFactor.getCredentials()
         trustedDevices = await client.twoFactor.getTrustedDevices()
+        if let appId, !appId.isEmpty {
+            // Nil on any failure, which leaves the screen as it always was.
+            let configuration = await client.twoFactor.getConfiguration(appId: appId)
+            appDoesNotEnforce = TwoFactorSettingsRules.appDoesNotEnforce(configuration)
+        }
+    }
+
+    /// If the session was restricted until the user enrolled (the app requires two-factor),
+    /// enrolling is what lifts it: refresh now so the rest of the app works without waiting for a
+    /// timed refresh. Not fatal on failure — the sign-in flow's own completion step reports it.
+    /// Port of react-shared useTwoFactorLogic's liftEnrollmentRestriction.
+    private func liftEnrollmentRestriction(_ client: WildwoodClient) async {
+        if client.session.requiresTwoFactorEnrollment {
+            _ = await client.session.completeTwoFactorEnrollment()
+        }
     }
 }
 
