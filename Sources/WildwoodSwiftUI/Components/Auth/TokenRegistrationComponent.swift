@@ -138,6 +138,20 @@ public struct TokenRegistrationComponent: View {
         isLoading = true
         defer { isLoading = false }
 
+        // The app's password policy, checked before anything is sent (React/RN parity, JS #41).
+        // validatePassword reads the policy at submit time, so a submit that beats the policy
+        // load is still checked; a policy that cannot be read leaves the server to decide.
+        let resolvedAppId = appId ?? client.config.appId ?? ""
+        if !resolvedAppId.isEmpty {
+            let policy = await client.auth.validatePassword(password, appId: resolvedAppId)
+            guard policy.isValid else {
+                errorMessage = policy.errorMessage
+                SignupFunnel.error(client, category: "password_policy")
+                onRegistrationError?(policy.errorMessage)
+                return
+            }
+        }
+
         let isValid = await client.auth.validateRegistrationToken(token)
         tokenValid = isValid
         guard isValid else {

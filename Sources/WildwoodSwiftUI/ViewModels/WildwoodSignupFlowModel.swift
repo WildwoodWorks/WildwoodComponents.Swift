@@ -340,9 +340,34 @@ public final class WildwoodSignupFlowModel {
     public func start() {
         if started || detached { return }
         started = true
+        // The session restores itself from the Keychain asynchronously. Until it has,
+        // `isAuthenticated` reads false for a visitor who IS signed in, so latching it now showed a
+        // cold-launched signed-in user the form for a second account. Latch once the session is
+        // ready; the catalog loads meanwhile, exactly as @wildwood/react-shared useSignupFlow does.
+        if client.session.isInitialized {
+            latchSignedIn()
+        } else {
+            sessionReadySubscription = client.events.on { [weak self] event in
+                if case .sessionInitialized = event { self?.latchSignedIn() }
+            }
+            // It may have finished between the check and the subscription.
+            if client.session.isInitialized { latchSignedIn() }
+        }
+        loadTask = Task { await self.load() }
+    }
+
+    @ObservationIgnored private var sessionReadySubscription: WildwoodSubscription?
+    @ObservationIgnored private var signedInLatched = false
+
+    /// Latched on the first call only: a login later in this very flow must not look like "you
+    /// were already signed in".
+    private func latchSignedIn() {
+        sessionReadySubscription?.cancel()
+        sessionReadySubscription = nil
+        if signedInLatched || detached { return }
+        signedInLatched = true
         dispatch(.initialize(signedIn: client.session.isAuthenticated))
         notifyAlreadySignedIn()
-        loadTask = Task { await self.load() }
     }
 
     public func submitForm(_ data: RegistrationFormData) {
@@ -489,6 +514,8 @@ public final class WildwoodSignupFlowModel {
         if detached { return }
         detached = true
 
+        sessionReadySubscription?.cancel()
+        sessionReadySubscription = nil
         onAlreadySignedIn = nil
         onSignupComplete = nil
         onEntitlementsChanged = nil

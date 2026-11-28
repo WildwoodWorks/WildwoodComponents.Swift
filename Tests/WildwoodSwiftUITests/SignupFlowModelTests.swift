@@ -307,6 +307,8 @@ struct SignupFlowModelTests {
         client.session.login(
             AuthenticationResponse(id: "u-1", userId: "u-1", email: "a@b.test", jwtToken: "jwt-1")
         )
+        // A host initializes the client at launch; the flow latches against an initialized session.
+        await client.initialize()
         let model = WildwoodSignupFlowModel(
             client: client,
             options: WildwoodSignupFlowOptions(preSelectedTierId: "tier-pro"),
@@ -321,6 +323,65 @@ struct SignupFlowModelTests {
 
         #expect(model.alreadySignedIn == true)
         #expect(notices.count == 1)
+    }
+
+    /// A cold launch: the flow starts before the session has restored from storage, so it must
+    /// wait for `.sessionInitialized` before deciding the visitor is new (JS #37).
+    @Test func aColdLaunchWaitsForTheSessionBeforeLatchingSignedIn() async {
+        let backend = TestBackend()
+        stubOpenRegistration(backend)
+        stubCatalog(backend)
+
+        let client = makeTestClient(backend, appId: Self.appId)
+        // A session persisted by an earlier launch, not yet restored.
+        client.session.login(
+            AuthenticationResponse(id: "u-1", userId: "u-1", email: "a@b.test", jwtToken: "jwt-1")
+        )
+        #expect(client.session.isInitialized == false)
+
+        let model = WildwoodSignupFlowModel(
+            client: client,
+            options: WildwoodSignupFlowOptions(preSelectedTierId: "tier-pro"),
+            issuer: StepTokenIssuer()
+        )
+        let notices = CallCounter()
+        model.onAlreadySignedIn = { notices.bump() }
+
+        model.start()
+        #expect(model.alreadySignedIn == false)
+        #expect(notices.count == 0)
+
+        await client.initialize()
+        await waitUntil { model.alreadySignedIn }
+
+        #expect(model.alreadySignedIn == true)
+        #expect(notices.count == 1)
+    }
+
+    /// A view that goes away before the session restores latches nothing.
+    @Test func detachingBeforeTheSessionRestoresLatchesNothing() async {
+        let backend = TestBackend()
+        stubOpenRegistration(backend)
+        stubCatalog(backend)
+
+        let client = makeTestClient(backend, appId: Self.appId)
+        client.session.login(
+            AuthenticationResponse(id: "u-1", userId: "u-1", email: "a@b.test", jwtToken: "jwt-1")
+        )
+        let model = WildwoodSignupFlowModel(
+            client: client,
+            options: WildwoodSignupFlowOptions(preSelectedTierId: "tier-pro"),
+            issuer: StepTokenIssuer()
+        )
+        let notices = CallCounter()
+        model.onAlreadySignedIn = { notices.bump() }
+
+        model.start()
+        model.detach()
+        await client.initialize()
+
+        #expect(model.alreadySignedIn == false)
+        #expect(notices.count == 0)
     }
 
     // MARK: - Signup links (DD-5)
